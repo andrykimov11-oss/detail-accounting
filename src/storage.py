@@ -1,0 +1,212 @@
+"""
+Слой хранения данных. Абстракция над БД.
+
+Бизнес-логика (scan_processor, status_calc) НЕ знает, под ней SQLite
+или PostgreSQL. Весь доступ к данным — через этот модуль. Смена движка =
+смена реализации Storage, остальной код не трогается.
+
+Текущая реализация: SQLite (один файл, без сервера). Достаточно для PoC и
+пилота на 1-2 станках. При росте до 3+ станков с параллельной записью —
+заменить на PostgreSQL (та же структура, другой драйвер).
+
+Схема (см. docs/storage-schema.png при наличии):
+    details      — плановый состав деталей (из .xbir)
+    scan_events  — все события сканера, audit log (не удаляется)
+    facts        — накопленный факт по операции+деталь
+"""
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+
+SCHEMA_SQL = """
+-- Плановый состав деталей заказа (импорт из .xbir)
+CREATE TABLE IF NOT EXISTS details (
+    detail_uid    TEXT NOT NULL,
+    order_num     INTEGER NOT NULL,
+    qr_code       TEXT NOT NULL,
+    pos_no        TEXT,
+    material_name TEXT,
+    thickness     INTEGER,
+    length        INTEGER,
+    width         INTEGER,
+    qty           INTEGER NOT NULL,          -- плановое количество экземпляров
+    edge_l1       REAL DEFAULT 0,
+    edge_l2       REAL DEFAULT 0,
+    edge_w1       REAL DEFAULT 0,
+    edge_w2       REAL DEFAULT 0,
+    edge_total_len REAL DEFAULT 0,
+    perimeter     REAL DEFAULT 0,
+    area          REAL DEFAULT 0,
+    source_file   TEXT,
+    imported_at   TEXT NOT NULL,
+    PRIMARY KEY (detail_uid, order_num)
+);
+
+-- Все события сканера (audit log). Ничего не удаляется.
+CREATE TABLE IF NOT EXISTS scan_events (
+    scan_id      TEXT PRIMARY KEY,
+    qr_code      TEXT,
+    area_id      TEXT,
+    operator_id  TEXT,
+    operation_1c TEXT,
+    scanned_at   TEXT NOT NULL,
+    status       TEXT NOT NULL,              -- accepted/duplicate/overplan/...
+    detail_uid   TEXT,                       -- если резолвится
+    scanned_count INTEGER,                   -- счётчик на момент события
+    planned_qty  INTEGER,
+    message      TEXT,
+    anomaly      INTEGER DEFAULT 0,
+    suggest_list INTEGER DEFAULT 0
+);
+
+-- Накопленный факт: сколько деталей отсканировано по операции+деталь
+CREATE TABLE IF NOT EXISTS facts (
+    order_num     INTEGER NOT NULL,
+    operation_1c  TEXT NOT NULL,
+    detail_uid    TEXT NOT NULL,
+    scanned_count INTEGER NOT NULL DEFAULT 0,
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY (operation_1c, detail_uid)
+);
+
+CREATE INDEX IF NOT EXISTS idx_details_order ON details(order_num);
+CREATE INDEX IF NOT EXISTS idx_details_qr ON details(qr_code);
+CREATE INDEX IF NOT EXISTS idx_scan_events_order ON scan_events(operation_1c);
+CREATE INDEX IF NOT EXISTS idx_facts_order ON facts(order_num);
+"""
+
+
+class Storage:
+    """
+    Хранилище данных. Текущая реализация — SQLite.
+
+    Везде, где бизнес-логике нужны данные, она обращается сюда, а не к БД
+    напрямую. При переходе на PostgreSQL создаётся PostgresStorage с теми
+    же методами.
+    """
+
+    def __init__(self, db_path: str | Path):
+        self.db_path = str(db_path)
+        self._conn: Optional[sqlite3.Connection] = None
+        self._connect()
+
+    def _connect(self):
+        self._conn = sqlite3.connect(self.db_path)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.executescript(SCHEMA_SQL)
+        self._conn.commit()
+
+    def close(self):
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+    # --- details (плановый состав) ------------------------------------------
+
+    def upsert_detail(self, d: dict) -> None:
+        """Добавить/обновить деталь в плане заказа."""
+        self._conn.execute("""
+            INSERT INTO details (detail_uid, order_num, qr_code, pos_no,
+                material_name, thickness, length, width, qty,
+                edge_l1, edge_l2, edge_w1, edge_w2, edge_total_len,
+                perimeter, area, source_file, imported_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(detail_uid, order_num) DO UPDATE SET
+                qr_code=excluded.qr_code, qty=excluded.qty,
+                length=excluded.length, width=excluded.width,
+                thickness=excluded.thickness
+        """, (
+            d["detail_uid"], d["order_num"], d["qr_code"], d.get("pos_no", ""),
+            d.get("material_name", ""), d.get("thickness", 0),
+            d.get("length", 0), d.get("width", 0), d["qty"],
+            d.get("edge_l1", 0), d.get("edge_l2", 0),
+            d.get("edge_w1", 0), d.get("edge_w2", 0),
+            d.get("edge_total_len", 0), d.get("perimeter", 0),
+            d.get("area", 0), d.get("source_file", ""),
+            datetime.now().isoformat(),
+        ))
+        self._conn.commit()
+
+    def get_details_by_order(self, order_num: int) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM details WHERE order_num=? ORDER BY pos_no",
+            (order_num,)
+        ).fetchall()
+
+    def get_detail_by_qr(self, qr_code: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM details WHERE qr_code=?", (qr_code,)
+        ).fetchone()
+
+    def count_details(self) -> int:
+        return self._conn.execute("SELECT COUNT(*) FROM details").fetchone()[0]
+
+    # --- scan_events (audit log) --------------------------------------------
+
+    def log_scan_event(self, event: dict) -> None:
+        """Записать событие сканера в audit log (любой статус)."""
+        self._conn.execute("""
+            INSERT OR REPLACE INTO scan_events
+                (scan_id, qr_code, area_id, operator_id, operation_1c,
+                 scanned_at, status, detail_uid, scanned_count, planned_qty,
+                 message, anomaly, suggest_list)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            event["scan_id"], event.get("qr_code", ""), event.get("area_id", ""),
+            event.get("operator_id", ""), event.get("operation_1c", ""),
+            event["scanned_at"], event["status"], event.get("detail_uid", ""),
+            event.get("scanned_count", 0), event.get("planned_qty", 0),
+            event.get("message", ""), int(event.get("anomaly", False)),
+            int(event.get("suggest_list", False)),
+        ))
+        self._conn.commit()
+
+    def count_scan_events(self) -> int:
+        return self._conn.execute("SELECT COUNT(*) FROM scan_events").fetchone()[0]
+
+    def count_accepted_events(self) -> int:
+        return self._conn.execute(
+            "SELECT COUNT(*) FROM scan_events WHERE status='accepted'"
+        ).fetchone()[0]
+
+    # --- facts (накопленный факт) -------------------------------------------
+
+    def upsert_fact(self, order_num: int, operation_1c: str,
+                    detail_uid: str, scanned_count: int) -> None:
+        """Обновить накопленный счётчик факта по операции+деталь."""
+        self._conn.execute("""
+            INSERT INTO facts (order_num, operation_1c, detail_uid,
+                               scanned_count, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(operation_1c, detail_uid) DO UPDATE SET
+                scanned_count=excluded.scanned_count,
+                updated_at=excluded.updated_at
+        """, (order_num, operation_1c, detail_uid, scanned_count,
+              datetime.now().isoformat()))
+        self._conn.commit()
+
+    def get_facts_by_order(self, order_num: int) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM facts WHERE order_num=?", (order_num,)
+        ).fetchall()
+
+    def get_fact_count(self, operation_1c: str, detail_uid: str) -> int:
+        row = self._conn.execute(
+            "SELECT scanned_count FROM facts WHERE operation_1c=? AND detail_uid=?",
+            (operation_1c, detail_uid)
+        ).fetchone()
+        return row["scanned_count"] if row else 0
+
+    # --- отладка -------------------------------------------------------------
+
+    def stats(self) -> dict:
+        return {
+            "details": self.count_details(),
+            "scan_events": self.count_scan_events(),
+            "accepted": self.count_accepted_events(),
+        }
