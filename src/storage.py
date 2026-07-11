@@ -47,6 +47,15 @@ CREATE TABLE IF NOT EXISTS details (
     PRIMARY KEY (detail_uid, order_num)
 );
 
+-- Справочник «участок → операция» (технолог правит без правки кода).
+-- Один участок → много операций; одна операция может быть на нескольких участках.
+CREATE TABLE IF NOT EXISTS area_operations (
+    area_id       TEXT NOT NULL,            -- 'area_edging'
+    area_name     TEXT NOT NULL,            -- 'Кромление'
+    operation_1c  TEXT NOT NULL,            -- 'Облицовывание кромки 19/0,8'
+    PRIMARY KEY (area_id, operation_1c)
+);
+
 -- Все события сканера (audit log). Ничего не удаляется.
 CREATE TABLE IF NOT EXISTS scan_events (
     scan_id      TEXT PRIMARY KEY,
@@ -145,6 +154,41 @@ class Storage:
 
     def count_details(self) -> int:
         return self._conn.execute("SELECT COUNT(*) FROM details").fetchone()[0]
+
+    # --- area_operations (справочник участок → операция) --------------------
+
+    def upsert_area_operation(self, area_id: str, area_name: str,
+                              operation_1c: str) -> None:
+        """Добавить/обновить связку участок → операция."""
+        self._conn.execute("""
+            INSERT INTO area_operations (area_id, area_name, operation_1c)
+            VALUES (?, ?, ?)
+            ON CONFLICT(area_id, operation_1c) DO UPDATE SET
+                area_name=excluded.area_name
+        """, (area_id, area_name, operation_1c))
+        self._conn.commit()
+
+    def get_operations_by_area(self, area_id: str) -> list[str]:
+        """Список операций участка."""
+        rows = self._conn.execute(
+            "SELECT operation_1c FROM area_operations WHERE area_id=? ORDER BY operation_1c",
+            (area_id,)
+        ).fetchall()
+        return [r["operation_1c"] for r in rows]
+
+    def get_all_areas(self) -> list[sqlite3.Row]:
+        """Все участки (для списка выбора при регистрации)."""
+        return self._conn.execute(
+            "SELECT DISTINCT area_id, area_name FROM area_operations ORDER BY area_id"
+        ).fetchall()
+
+    def get_area_of_operation(self, operation_1c: str) -> Optional[str]:
+        """Найти участок операции (первое совпадение)."""
+        row = self._conn.execute(
+            "SELECT area_id FROM area_operations WHERE operation_1c=? LIMIT 1",
+            (operation_1c,)
+        ).fetchone()
+        return row["area_id"] if row else None
 
     # --- scan_events (audit log) --------------------------------------------
 
