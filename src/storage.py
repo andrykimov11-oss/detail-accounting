@@ -56,6 +56,25 @@ CREATE TABLE IF NOT EXISTS area_operations (
     PRIMARY KEY (area_id, operation_1c)
 );
 
+-- Справочник операторов: физлица из 1С (файл «производственные операции»).
+-- Авторизация без пароля: оператор выбирает себя из списка и указывает участок.
+CREATE TABLE IF NOT EXISTS operators (
+    operator_id   TEXT PRIMARY KEY,         -- 'op_mazein'
+    full_name     TEXT NOT NULL,            -- ФИО как в 1С
+    is_active     INTEGER DEFAULT 1,
+    imported_at   TEXT
+);
+
+-- Сессия смены: кто на каком участке работает сейчас.
+-- Открывается при регистрации оператора, закрывается в конце смены.
+CREATE TABLE IF NOT EXISTS shift_sessions (
+    session_id    TEXT PRIMARY KEY,
+    operator_id   TEXT NOT NULL,
+    area_id       TEXT NOT NULL,
+    started_at    TEXT NOT NULL,
+    ended_at      TEXT
+);
+
 -- Все события сканера (audit log). Ничего не удаляется.
 CREATE TABLE IF NOT EXISTS scan_events (
     scan_id      TEXT PRIMARY KEY,
@@ -87,6 +106,7 @@ CREATE INDEX IF NOT EXISTS idx_details_order ON details(order_num);
 CREATE INDEX IF NOT EXISTS idx_details_qr ON details(qr_code);
 CREATE INDEX IF NOT EXISTS idx_scan_events_order ON scan_events(operation_1c);
 CREATE INDEX IF NOT EXISTS idx_facts_order ON facts(order_num);
+CREATE INDEX IF NOT EXISTS idx_sessions_open ON shift_sessions(ended_at);
 """
 
 
@@ -190,6 +210,55 @@ class Storage:
         ).fetchone()
         return row["area_id"] if row else None
 
+    # --- operators / смены ---------------------------------------------------
+
+    def upsert_operator(self, operator_id: str, full_name: str,
+                        is_active: bool = True) -> None:
+        """Добавить/обновить оператора (импорт списка физлиц из 1С)."""
+        self._conn.execute("""
+            INSERT INTO operators (operator_id, full_name, is_active, imported_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(operator_id) DO UPDATE SET
+                full_name=excluded.full_name, is_active=excluded.is_active
+        """, (operator_id, full_name, int(is_active), datetime.now().isoformat()))
+        self._conn.commit()
+
+    def get_operators(self, active_only: bool = True) -> list[sqlite3.Row]:
+        """Список операторов для экрана выбора (авторизация без пароля)."""
+        sql = "SELECT * FROM operators"
+        if active_only:
+            sql += " WHERE is_active=1"
+        return self._conn.execute(sql + " ORDER BY full_name").fetchall()
+
+    def get_operator(self, operator_id: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM operators WHERE operator_id=?", (operator_id,)
+        ).fetchone()
+
+    def open_shift(self, session_id: str, operator_id: str,
+                   area_id: str, started_at: str | None = None) -> None:
+        """Оператор заступил на смену на участке."""
+        self._conn.execute("""
+            INSERT OR REPLACE INTO shift_sessions
+                (session_id, operator_id, area_id, started_at, ended_at)
+            VALUES (?, ?, ?, ?, NULL)
+        """, (session_id, operator_id, area_id,
+              started_at or datetime.now().isoformat()))
+        self._conn.commit()
+
+    def close_shift(self, session_id: str, ended_at: str | None = None) -> None:
+        self._conn.execute(
+            "UPDATE shift_sessions SET ended_at=? WHERE session_id=?",
+            (ended_at or datetime.now().isoformat(), session_id))
+        self._conn.commit()
+
+    def get_open_shift(self, operator_id: str) -> Optional[sqlite3.Row]:
+        """Открытая смена оператора — источник area_id для события скана."""
+        return self._conn.execute(
+            "SELECT * FROM shift_sessions WHERE operator_id=? AND ended_at IS NULL"
+            " ORDER BY started_at DESC LIMIT 1", (operator_id,)
+        ).fetchone()
+
     # --- scan_events (audit log) --------------------------------------------
 
     def log_scan_event(self, event: dict) -> None:
@@ -217,6 +286,22 @@ class Storage:
         return self._conn.execute(
             "SELECT COUNT(*) FROM scan_events WHERE status='accepted'"
         ).fetchone()[0]
+
+    def get_last_scan_times(self, order_num: int) -> list[sqlite3.Row]:
+        """
+        Время последнего засчитанного скана по паре (qr_code, операция).
+
+        Нужно для защиты от дубликатов между перезапусками и между
+        рабочими местами: окно дубликатов должно быть общим, а не жить
+        в памяти одного процесса.
+        """
+        return self._conn.execute("""
+            SELECT e.qr_code, e.operation_1c, MAX(e.scanned_at) AS last_at
+              FROM scan_events e
+              JOIN details d ON d.qr_code = e.qr_code
+             WHERE d.order_num = ? AND e.status = 'accepted'
+             GROUP BY e.qr_code, e.operation_1c
+        """, (order_num,)).fetchall()
 
     # --- facts (накопленный факт) -------------------------------------------
 

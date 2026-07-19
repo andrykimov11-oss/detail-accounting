@@ -119,7 +119,8 @@ class OrderContext:
 
 # --- Обработка одного события -----------------------------------------------
 
-def process_scan(event: ScanEvent, ctx: OrderContext) -> FactResult:
+def process_scan(event: ScanEvent, ctx: OrderContext,
+                 area_ops: list[str] | None = None) -> FactResult:
     """
     Обработать событие сканера. Возвращает результат (засчитан/ошибка).
     Мутирует ctx: обновляет счётчики факта.
@@ -129,9 +130,12 @@ def process_scan(event: ScanEvent, ctx: OrderContext) -> FactResult:
       → проверка QR → проверка применимости операции к детали
       → счётчик деталей по GUID → факт.
     """
-    # 1. Участок → список операций
-    area_ops = AREAS.get(event.area_id)
+    # 1. Участок → список операций.
+    # Приоритет — справочник из БД (area_ops), переданный вызывающим кодом.
+    # Fallback на константу AREAS — только для автономных запусков/тестов.
     if area_ops is None:
+        area_ops = AREAS.get(event.area_id)
+    if not area_ops:
         return FactResult(
             status=FactStatus.UNKNOWN_AREA,
             message=f"участок '{event.area_id}' не описан",
