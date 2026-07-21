@@ -56,6 +56,22 @@ CREATE TABLE IF NOT EXISTS area_operations (
     PRIMARY KEY (area_id, operation_1c)
 );
 
+-- Реестр связок «заказ Базиса ↔ документ 1С».
+-- Числовой номер из .xbir может соответствовать нескольким документам 1С
+-- (разные префиксы ПС00/ЛД00/0Ч00). Связка разрешается один раз и хранится
+-- здесь: автоматически по имени клиента либо вручную технологом.
+CREATE TABLE IF NOT EXISTS order_links (
+    order_num      INTEGER PRIMARY KEY,      -- 7936 — число из .xbir
+    order_full_num TEXT,                     -- 'ПС00-007936' — документ 1С
+    client_name    TEXT,                     -- клиент по данным 1С
+    xbir_client    TEXT,                     -- клиент, извлечённый из .xbir
+    status         TEXT NOT NULL,            -- unique/client/manual/not_found
+    reason         TEXT,                     -- чем разрешено (для аудита)
+    candidates     TEXT,                     -- кандидаты через ';'
+    confirmed_by   TEXT,                     -- кто подтвердил вручную
+    resolved_at    TEXT NOT NULL
+);
+
 -- Справочник операторов: физлица из 1С (файл «производственные операции»).
 -- Авторизация без пароля: оператор выбирает себя из списка и указывает участок.
 CREATE TABLE IF NOT EXISTS operators (
@@ -107,6 +123,7 @@ CREATE INDEX IF NOT EXISTS idx_details_qr ON details(qr_code);
 CREATE INDEX IF NOT EXISTS idx_scan_events_order ON scan_events(operation_1c);
 CREATE INDEX IF NOT EXISTS idx_facts_order ON facts(order_num);
 CREATE INDEX IF NOT EXISTS idx_sessions_open ON shift_sessions(ended_at);
+CREATE INDEX IF NOT EXISTS idx_links_status ON order_links(status);
 """
 
 
@@ -209,6 +226,72 @@ class Storage:
             (operation_1c,)
         ).fetchone()
         return row["area_id"] if row else None
+
+    # --- order_links (связка Базис ↔ 1С) ------------------------------------
+
+    def upsert_order_link(self, order_num: int, status: str,
+                          order_full_num: str = "", client_name: str = "",
+                          xbir_client: str = "", reason: str = "",
+                          candidates: list[str] | None = None,
+                          confirmed_by: str = "") -> None:
+        """Записать результат разрешения связки заказа."""
+        self._conn.execute("""
+            INSERT INTO order_links (order_num, order_full_num, client_name,
+                xbir_client, status, reason, candidates, confirmed_by, resolved_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(order_num) DO UPDATE SET
+                order_full_num=excluded.order_full_num,
+                client_name=excluded.client_name,
+                xbir_client=excluded.xbir_client,
+                status=excluded.status,
+                reason=excluded.reason,
+                candidates=excluded.candidates,
+                confirmed_by=excluded.confirmed_by,
+                resolved_at=excluded.resolved_at
+        """, (order_num, order_full_num, client_name, xbir_client, status,
+              reason, ";".join(candidates or []), confirmed_by,
+              datetime.now().isoformat()))
+        self._conn.commit()
+
+    def get_order_link(self, order_num: int) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM order_links WHERE order_num=?", (order_num,)
+        ).fetchone()
+
+    def get_pending_links(self) -> list[sqlite3.Row]:
+        """
+        Очередь ручного разбора: заказы, связку которых система не смогла
+        установить однозначно. Технолог сопоставляет их вручную.
+        """
+        return self._conn.execute(
+            "SELECT * FROM order_links WHERE status IN ('manual','not_found')"
+            " ORDER BY order_num"
+        ).fetchall()
+
+    def confirm_order_link(self, order_num: int, order_full_num: str,
+                           confirmed_by: str) -> None:
+        """
+        Технолог вручную подтвердил связку. Статус становится 'manual_confirmed' —
+        отличается от автоматических, чтобы в аудите было видно решение человека.
+        """
+        self._conn.execute("""
+            UPDATE order_links
+               SET order_full_num=?, status='manual_confirmed',
+                   confirmed_by=?, resolved_at=?,
+                   reason='подтверждено вручную'
+             WHERE order_num=?
+        """, (order_full_num, confirmed_by, datetime.now().isoformat(), order_num))
+        self._conn.commit()
+
+    def is_order_linked(self, order_num: int) -> bool:
+        """
+        Разрешена ли связка заказа. Заказ без подтверждённой связки не
+        допускается к учёту: статус ушёл бы не в тот документ 1С.
+        """
+        row = self.get_order_link(order_num)
+        return bool(row) and row["status"] in (
+            "unique", "window", "client", "manual_confirmed"
+        ) and bool(row["order_full_num"])
 
     # --- operators / смены ---------------------------------------------------
 

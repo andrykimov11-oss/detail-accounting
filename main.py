@@ -59,12 +59,18 @@ def cmd_import(args) -> int:
         print("Нет файлов для импорта", file=sys.stderr)
         return 1
 
-    res = core.import_xbir(paths)
+    res = core.import_xbir(paths, require_link=args.require_link)
     print(f"Файлов:    {res.files}")
     print(f"Строк:     {res.rows_total}")
     print(f"Деталей:   {res.details_imported}")
     print(f"Заказов:   {len(res.orders)} → {res.orders}")
     print(f"Ошибок:    {res.errors}")
+
+    if res.skipped_unlinked:
+        print()
+        print(f"  ⚠ ПРОПУЩЕНО {len(res.skipped_unlinked)} заказов без связки с 1С:")
+        print(f"      {res.skipped_unlinked[:15]}")
+        print(f"      разобрать: python main.py --db {args.db} pending")
 
     if res.qr_collisions:
         print()
@@ -128,6 +134,70 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_link(args) -> int:
+    """Разрешить связки заказов Базиса с документами 1С."""
+    from one_c_loader import load_production_plan
+    from order_resolver import format_resolve_report
+    from xbir_parser import parse_xbir
+
+    core = _core(args.db)
+
+    one_c, load_rep = load_production_plan(Path(args.plan))
+    print(f"1С: строк {load_rep.rows_total}, заказов активных {load_rep.orders_total}")
+    print(f"    префиксы: {load_rep.prefixes}")
+
+    xbir_orders: dict[int, str] = {}
+    for f in args.files:
+        path = Path(f)
+        if not path.is_file():
+            print(f"  ✗ не найден: {path}", file=sys.stderr)
+            continue
+        details, _ = parse_xbir(path)
+        for d in details:
+            if d.order_num is not None:
+                xbir_orders.setdefault(d.order_num, d.order_raw.strip())
+
+    if not xbir_orders:
+        print("Не найдено ни одного заказа в .xbir", file=sys.stderr)
+        return 1
+
+    print()
+    print(format_resolve_report(core.resolve_links(xbir_orders, one_c)))
+    return 0
+
+
+def cmd_pending(args) -> int:
+    """Очередь ручного сопоставления для технолога."""
+    core = _core(args.db)
+    rows = core.pending_links()
+
+    if not rows:
+        print("Очередь пуста: связки всех заказов подтверждены.")
+        return 0
+
+    print(f"ТРЕБУЕТСЯ СОПОСТАВЛЕНИЕ: {len(rows)} заказов\n")
+    for r in rows:
+        print(f"  Базис {r['order_num']}: «{r['xbir_client'] or '—'}»")
+        print(f"     {r['reason']}")
+        for cand in (r["candidates"] or "").split(";"):
+            if cand:
+                print(f"       ? {cand}")
+        print(f"     подтвердить:  python main.py --db {args.db} confirm "
+              f"--order {r['order_num']} --doc <НОМЕР> --by <ФИО>")
+        print()
+    return 0
+
+
+def cmd_confirm(args) -> int:
+    """Технолог подтверждает связку вручную."""
+    core = _core(args.db)
+    core.confirm_link(args.order, args.doc, args.by)
+    row = core.storage.get_order_link(args.order)
+    print(f"✓ заказ {args.order} → {row['order_full_num']}")
+    print(f"   подтвердил: {row['confirmed_by']}")
+    return 0
+
+
 def cmd_stats(args) -> int:
     core = _core(args.db)
     for k, v in core.storage.stats().items():
@@ -144,7 +214,23 @@ def main(argv: list[str] | None = None) -> int:
 
     imp = sub.add_parser("import", help="импорт .xbir")
     imp.add_argument("files", nargs="+")
+    imp.add_argument("--require-link", action="store_true",
+                     help="не импортировать заказы без подтверждённой связки с 1С")
     imp.set_defaults(fn=cmd_import)
+
+    ln = sub.add_parser("link", help="разрешить связки заказов Базис ↔ 1С")
+    ln.add_argument("files", nargs="+", help="файлы .xbir")
+    ln.add_argument("--plan", required=True, help="xlsx выгрузки 1С")
+    ln.set_defaults(fn=cmd_link)
+
+    sub.add_parser("pending", help="очередь ручного сопоставления").set_defaults(
+        fn=cmd_pending)
+
+    cf = sub.add_parser("confirm", help="подтвердить связку вручную")
+    cf.add_argument("--order", type=int, required=True, help="номер заказа Базиса")
+    cf.add_argument("--doc", required=True, help="номер документа 1С")
+    cf.add_argument("--by", required=True, help="кто подтвердил")
+    cf.set_defaults(fn=cmd_confirm)
 
     sc = sub.add_parser("scan", help="обработать скан")
     sc.add_argument("--order", type=int, required=True)

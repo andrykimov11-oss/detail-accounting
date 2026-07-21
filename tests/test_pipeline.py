@@ -77,6 +77,85 @@ def test_qr_matches_spec_format():
     assert all(c in "0123456789abcdef" for c in code)
 
 
+# --- Связка заказов Базис ↔ 1С ----------------------------------------------
+
+def _one_c(full: str, client: str):
+    from one_c_loader import OneCOrder, parse_order_number
+    prefix, num = parse_order_number(full)
+    return OneCOrder(order_full_num=full, order_prefix=prefix, order_num=num,
+                     client_name=client, order_status="К выполнению")
+
+
+def test_resolve_links_records_registry(core: ProductionCore):
+    results = core.resolve_links(
+        {6564: "6564 Спецторг ООО"},
+        {6564: [_one_c("ЛД00-006564", "Спецторг ООО")]},
+    )
+    assert results[0].is_resolved
+    assert core.storage.is_order_linked(6564)
+
+    row = core.storage.get_order_link(6564)
+    assert row["order_full_num"] == "ЛД00-006564"
+    assert row["status"] == "unique"
+
+
+def test_ambiguous_order_goes_to_pending_queue(core: ProductionCore):
+    """Неразрешённая связка не подтверждается сама — ждёт технолога."""
+    core.resolve_links(
+        {7846: "7846"},
+        {7846: [_one_c("ЛД00-007846", "ЛАДЬЯ ООО"),
+                _one_c("ПС00-007846", "Торсунов Владимир Сергеевич")]},
+    )
+    assert not core.storage.is_order_linked(7846)
+
+    pending = core.pending_links()
+    assert [p["order_num"] for p in pending] == [7846]
+    assert pending[0]["candidates"] == "ЛД00-007846;ПС00-007846"
+
+
+def test_technologist_confirms_link(core: ProductionCore):
+    core.resolve_links(
+        {7846: "7846"},
+        {7846: [_one_c("ЛД00-007846", "ЛАДЬЯ ООО"),
+                _one_c("ПС00-007846", "Торсунов Владимир Сергеевич")]},
+    )
+    core.confirm_link(7846, "ПС00-007846", confirmed_by="Технолог Иванов")
+
+    assert core.storage.is_order_linked(7846)
+    assert core.pending_links() == []
+
+    row = core.storage.get_order_link(7846)
+    assert row["status"] == "manual_confirmed"
+    assert row["confirmed_by"] == "Технолог Иванов"
+
+
+def test_import_skips_unlinked_orders(core: ProductionCore, xbir_file: Path):
+    """
+    Заказ без подтверждённой связки не попадает в учёт: иначе статус
+    операции ушёл бы не в тот документ 1С.
+    """
+    res = core.import_xbir([xbir_file], require_link=True)
+    assert res.details_imported == 0
+    assert res.skipped_unlinked == [6564]
+    assert core.storage.count_details() == 0
+
+
+def test_import_proceeds_after_link_resolved(core: ProductionCore, xbir_file: Path):
+    core.resolve_links(
+        {6564: "6564 Спецторг ООО"},
+        {6564: [_one_c("ЛД00-006564", "Спецторг ООО")]},
+    )
+    res = core.import_xbir([xbir_file], require_link=True)
+    assert res.details_imported == 3
+    assert res.skipped_unlinked == []
+
+
+def test_import_without_gate_ignores_links(core: ProductionCore, xbir_file: Path):
+    """По умолчанию гейт выключен — обратная совместимость для отладки."""
+    res = core.import_xbir([xbir_file])
+    assert res.details_imported == 3
+
+
 # --- Загрузка заказа из БД ---------------------------------------------------
 
 def test_load_order_restores_details(loaded_core: ProductionCore):

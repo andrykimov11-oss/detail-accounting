@@ -59,6 +59,7 @@ class ImportResult:
     orders: list[int] = field(default_factory=list)
     reports: list[ValidationReport] = field(default_factory=list)
     qr_collisions: list[tuple[str, str, str]] = field(default_factory=list)
+    skipped_unlinked: list[int] = field(default_factory=list)
 
     @property
     def errors(self) -> int:
@@ -104,13 +105,56 @@ class ProductionCore:
         ops = self.storage.get_operations_by_area(area_id)
         return ops if ops else AREAS.get(area_id, [])
 
+    # --- Связка заказов Базис ↔ 1С ------------------------------------------
+
+    def resolve_links(self, xbir_orders: dict[int, str],
+                      one_c_by_num: dict[int, list]) -> list:
+        """
+        Разрешить связки заказов и записать результат в реестр.
+
+        Заказы, связку которых установить не удалось, сохраняются со
+        статусом `manual`/`not_found` и попадают в очередь технолога
+        (`storage.get_pending_links()`). К учёту они не допускаются.
+        """
+        from order_resolver import resolve_batch  # noqa: PLC0415
+
+        results = resolve_batch(xbir_orders, one_c_by_num)
+        for r in results:
+            self.storage.upsert_order_link(
+                order_num=r.order_num,
+                status=r.status.value,
+                order_full_num=r.order_full_num,
+                client_name=r.client_name,
+                xbir_client=r.xbir_client,
+                reason=r.reason,
+                candidates=r.candidates,
+            )
+        return results
+
+    def confirm_link(self, order_num: int, order_full_num: str,
+                     confirmed_by: str) -> None:
+        """Технолог вручную сопоставил заказ с документом 1С."""
+        self.storage.confirm_order_link(order_num, order_full_num, confirmed_by)
+
+    def pending_links(self) -> list:
+        """Очередь ручного разбора для технолога."""
+        return self.storage.get_pending_links()
+
     # --- Импорт плана из .xbir ----------------------------------------------
 
-    def import_xbir(self, paths: list[Path]) -> ImportResult:
+    def import_xbir(self, paths: list[Path],
+                    require_link: bool = False) -> ImportResult:
         """
         Распарсить .xbir и загрузить плановый состав деталей в хранилище.
+
         Попутно контролирует коллизии QR: два разных GUID с одинаковым
         MD5[:10] сделали бы учёт неоднозначным.
+
+        require_link=True — не импортировать заказы без подтверждённой
+        связки с документом 1С. Числовой номер из Базиса может
+        соответствовать нескольким заказам 1С (разные префиксы и годы),
+        и без разрешённой связки статус операции ушёл бы не в тот
+        документ. Такие заказы ждут решения технолога.
         """
         res = ImportResult()
         seen_qr: dict[str, str] = {}   # qr → detail_uid
@@ -125,6 +169,12 @@ class ProductionCore:
             for d in details:
                 if d.order_num is None:
                     continue
+
+                if require_link and not self.storage.is_order_linked(d.order_num):
+                    if d.order_num not in res.skipped_unlinked:
+                        res.skipped_unlinked.append(d.order_num)
+                    continue
+
                 qr = qr_of(d.detail_uid)
 
                 prev = seen_qr.get(qr)
