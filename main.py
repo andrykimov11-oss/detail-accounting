@@ -198,6 +198,16 @@ def cmd_confirm(args) -> int:
     return 0
 
 
+def cmd_rules(args) -> int:
+    """Построить правила отбора деталей из справочника операций 1С."""
+    from operation_rules import format_rules_report
+
+    core = _core(args.db)
+    rules, report, collisions = core.load_rules_from_1c(Path(args.areas))
+    print(format_rules_report(report, collisions))
+    return 0
+
+
 def cmd_stats(args) -> int:
     core = _core(args.db)
     for k, v in core.storage.stats().items():
@@ -245,6 +255,10 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument("--order", type=int, required=True)
     st.add_argument("--ops", nargs="+", required=True, help="операции 1С заказа")
     st.set_defaults(fn=cmd_status)
+
+    rl = sub.add_parser("rules", help="правила отбора деталей из справочника 1С")
+    rl.add_argument("--areas", required=True, help="xlsx «Операции по участкам»")
+    rl.set_defaults(fn=cmd_rules)
 
     sub.add_parser("stats", help="сводка по БД").set_defaults(fn=cmd_stats)
 

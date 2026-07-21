@@ -20,7 +20,7 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -63,19 +63,27 @@ def _edge_meters(d: Detail) -> float:
 
 
 def build_order_plan(details: list[Detail],
-                     operations_1c: list[str]) -> tuple[list[OperationPlan], list[str]]:
+                     operations_1c: list[str],
+                     rules: dict | None = None) -> tuple[list[OperationPlan], list[str]]:
     """
     Построить плановый состав операций по заказу.
 
     Аргументы:
         details        — детали заказа (из .xbir)
         operations_1c  — список имён операций цеха из 1С по этому заказу
+        rules          — правила из справочника 1С (operation_rules.build_rules).
+                         Если не переданы, используется встроенный набор из
+                         operation_mapping — это режим отладки, покрывающий
+                         12 операций из 227.
 
     Возвращает:
         (plans, warnings)
         plans    — список OperationPlan (по одной на операцию 1С)
-        warnings — операции без правила (нужно добавить в operation_mapping)
+        warnings — операции без правила
     """
+    if rules is not None:
+        return _build_plan_from_rules(details, operations_1c, rules)
+
     plans: list[OperationPlan] = []
     warnings: list[str] = []
 
@@ -112,6 +120,128 @@ def build_order_plan(details: list[Detail],
             operation_1c=op_name,
             stage=rule.stage,
             counted_as=rule.counted_as,
+            planned_instances=sum(d.qty for d in subset),
+            planned_unique=len(uids),
+            planned_area_m2=round(sum(d.area * d.qty for d in subset), 2),
+            planned_edge_m=round(sum(_edge_meters(d) * d.qty for d in subset), 2),
+            detail_uids=uids,
+            note=rule.note,
+            is_per_detail=True,
+        ))
+
+    return plans, warnings
+
+
+def _build_plan_from_rules(details: list[Detail], operations_1c: list[str],
+                           rules: dict) -> tuple[list[OperationPlan], list[str]]:
+    """
+    Плановый состав по правилам из справочника 1С (operation_rules).
+
+    Отличия от встроенного набора:
+      • покрыты все 227 операций цеха, а не 12;
+      • тарифные надбавки («свыше 30 м.п.», «глянец») плана не берут —
+        деталь считается один раз учётной операцией группы;
+      • операции, у которых характеристика не извлекается из названия,
+        помечаются позаказными, а не отбирают случайные детали.
+    """
+    plans: list[OperationPlan] = []
+    warnings: list[str] = []
+
+    # Дедупликация плана внутри заказа.
+    #
+    # Несколько операций могут иметь одинаковый предикат («Облицовывание
+    # кромки 19/2» и «35/2» обе берут кромку 2 мм — толщина ДСП из названия
+    # не применяется, таких толщин в .xbir нет). Если каждая заберёт полный
+    # состав, план раздуется вдвое и операция НИКОГДА не закроется:
+    # отсканировано всегда будет меньше планового.
+    #
+    # Поэтому детали засчитываются один раз — первой операции группы.
+    # Базовой считается операция с самым коротким названием: «Облицовывание
+    # кромки 19/2» короче, чем «Облицовывание криволинейных деталей 19/2».
+    # Это эвристика: точное разделение (какие детали криволинейные, какие
+    # узкие) требует признака от технолога, в .xbir его нет.
+    claimed: dict[tuple, str] = {}
+    claimed_details: dict[str, set] = {}
+    for op_name in sorted(operations_1c, key=lambda n: (len(n), n)):
+        rule = rules.get(op_name)
+        if rule is not None and rule.is_per_detail:
+            claimed.setdefault(rule.signature, op_name)
+
+    for op_name in sorted(operations_1c, key=lambda n: (len(n), n)):
+        rule = rules.get(op_name)
+
+        if rule is None:
+            plans.append(OperationPlan(
+                operation_1c=op_name, stage="unknown", counted_as="instances",
+                is_per_detail=False,
+                note="операции нет в справочнике 1С",
+            ))
+            warnings.append(op_name)
+            continue
+
+        if rule.is_tariff:
+            # Надбавка не берёт план — но только если учётная операция группы
+            # тоже есть в заказе. Иначе деталь не посчитал бы никто: заказ
+            # содержит «Раскрой 16мм (свыше 30 м.п.)» без «Раскрой 16мм»,
+            # и участок раскроя остался бы без плана.
+            primary_present = (rule.primary_operation
+                               and rule.primary_operation in operations_1c)
+            if primary_present:
+                plans.append(OperationPlan(
+                    operation_1c=op_name, stage=rule.stage,
+                    counted_as="instances", is_per_detail=False,
+                    note=f"тарифная надбавка — закрывается вместе "
+                         f"с «{rule.primary_operation}»",
+                ))
+                continue
+            # Учётной операции в заказе нет — надбавка считается за неё
+            rule = replace(rule, is_tariff=False, is_per_detail=True,
+                           note="учётной операции группы нет в заказе — "
+                                "план считает эта операция")
+
+        if not rule.is_per_detail:
+            plans.append(OperationPlan(
+                operation_1c=op_name, stage=rule.stage, counted_as="instances",
+                is_per_detail=False,
+                note=rule.note or "позаказная операция",
+            ))
+            continue
+
+        # Детали этой группы уже засчитаны другой операцией заказа
+        owner = claimed.get(rule.signature)
+        if owner and owner != op_name:
+            plans.append(OperationPlan(
+                operation_1c=op_name, stage=rule.stage, counted_as="instances",
+                is_per_detail=False,
+                note=f"те же детали, что у «{owner}» — учтены там, "
+                     f"чтобы план не задвоился",
+            ))
+            continue
+
+        subset = [d for d in details if rule.matches(d)]
+
+        # На раскрое, фрезеровании и присадке деталь проходит участок один
+        # раз, поэтому несколько операций одного участка не могут считать её
+        # повторно («Раскрой плиты 16мм» и «Рез ЛДСП 10, 16мм» пересекаются
+        # по деталям 16 мм). На кромлении иначе: деталь с кромками 0,4 и 2
+        # законно проходит две операции, там разделение идёт по предикату.
+        if rule.stage != "edging":
+            already = claimed_details.setdefault(rule.stage, set())
+            subset = [d for d in subset if d.detail_uid not in already]
+            already.update(d.detail_uid for d in subset)
+        if not subset:
+            plans.append(OperationPlan(
+                operation_1c=op_name, stage=rule.stage, counted_as="instances",
+                is_per_detail=False,
+                note="подетальная операция, но подходящих деталей в заказе нет",
+            ))
+            continue
+
+        uids = sorted({d.detail_uid for d in subset})
+        plans.append(OperationPlan(
+            operation_1c=op_name,
+            stage=rule.stage,
+            counted_as="instances",
             planned_instances=sum(d.qty for d in subset),
             planned_unique=len(uids),
             planned_area_m2=round(sum(d.area * d.qty for d in subset), 2),

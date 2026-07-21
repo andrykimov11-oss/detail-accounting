@@ -100,6 +100,24 @@ class ProductionCore:
                 n += 1
         return n
 
+    def load_rules_from_1c(self, area_operations_xlsx: Path):
+        """
+        Построить правила отбора деталей из справочника 1С и заполнить
+        таблицу area_operations. Заменяет 12 захардкоженных правил разбором
+        реального справочника цеха: 227 операций, 6 участков.
+        """
+        from one_c_loader import load_area_operations  # noqa: PLC0415
+        from operation_rules import build_rules, find_collisions  # noqa: PLC0415
+
+        area_map = load_area_operations(Path(area_operations_xlsx))
+        rules, report = build_rules(area_map)
+
+        for operation, area in area_map.items():
+            area_id = "area_" + str(abs(hash(area)) % 10**6)
+            self.storage.upsert_area_operation(area_id, area, operation)
+
+        return rules, report, find_collisions(list(rules.values()))
+
     def area_operations(self, area_id: str) -> list[str]:
         """Операции участка из справочника БД (fallback — константа AREAS)."""
         ops = self.storage.get_operations_by_area(area_id)
@@ -298,14 +316,15 @@ class ProductionCore:
 
     # --- План и статус -------------------------------------------------------
 
-    def order_plan(self, ctx: OrderContext,
-                   operations_1c: list[str]) -> tuple[list[OperationPlan], list[str]]:
-        return build_order_plan(ctx.details, operations_1c)
+    def order_plan(self, ctx: OrderContext, operations_1c: list[str],
+                   rules: dict | None = None) -> tuple[list[OperationPlan], list[str]]:
+        return build_order_plan(ctx.details, operations_1c, rules=rules)
 
     def order_status(self, ctx: OrderContext, operations_1c: list[str],
-                     now: datetime | None = None) -> list[OperationStatus]:
+                     now: datetime | None = None,
+                     rules: dict | None = None) -> list[OperationStatus]:
         """Статусы всех операций заказа по текущему факту."""
-        plans, _ = self.order_plan(ctx, operations_1c)
+        plans, _ = self.order_plan(ctx, operations_1c, rules=rules)
         return [calc_operation_status(p, ctx, now=now) for p in plans]
 
     def closing_payloads(self, ctx: OrderContext,
