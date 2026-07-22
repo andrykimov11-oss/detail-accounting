@@ -301,3 +301,21 @@ def test_report_renders_collisions():
     text = format_rules_report(report, find_collisions(list(rules.values())))
     assert "КОЛЛИЗИИ ПРЕДИКАТОВ" in text
     assert "тарифных надбавок" in text
+
+
+# --- Нецеховые услуги --------------------------------------------------------
+
+def test_non_shop_operations_excluded_from_plan():
+    """Экспедиторские услуги и подобное не участвуют в учёте загрузки."""
+    from operation_plan import build_order_plan
+    from operation_rules import NON_SHOP_OPERATIONS
+
+    rules, _ = build_rules(AREA_MAP)
+    details = [Detail(detail_uid="A", order_num=1, thickness=16,
+                      length=600, width=400, qty=5, edge_l1=0.4)]
+
+    for op in NON_SHOP_OPERATIONS:
+        plans, warnings = build_order_plan(details, [op], rules=rules)
+        assert plans[0].is_per_detail is False
+        assert plans[0].stage == "non_shop"
+        assert op not in warnings          # не считается «нет в справочнике»

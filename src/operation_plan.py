@@ -167,8 +167,18 @@ def _build_plan_from_rules(details: list[Detail], operations_1c: list[str],
         if rule is not None and rule.is_per_detail:
             claimed.setdefault(rule.signature, op_name)
 
+    from operation_rules import NON_SHOP_OPERATIONS  # noqa: PLC0415
+
     for op_name in sorted(operations_1c, key=lambda n: (len(n), n)):
         rule = rules.get(op_name)
+
+        if op_name in NON_SHOP_OPERATIONS:
+            plans.append(OperationPlan(
+                operation_1c=op_name, stage="non_shop", counted_as="instances",
+                is_per_detail=False,
+                note="нецеховая услуга — в учёте загрузки не участвует",
+            ))
+            continue
 
         if rule is None:
             plans.append(OperationPlan(

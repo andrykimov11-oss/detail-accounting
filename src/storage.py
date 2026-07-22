@@ -108,6 +108,21 @@ CREATE TABLE IF NOT EXISTS scan_events (
     suggest_list INTEGER DEFAULT 0
 );
 
+-- Очередь отправки статуса операции в 1С (гарантия доставки).
+-- Статус помечается delivered только после успешного ответа 1С.
+-- Недоставленные записи переживают недоступность сервиса.
+CREATE TABLE IF NOT EXISTS status_outbox (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    op_key       TEXT NOT NULL UNIQUE,       -- operation_id или order|operation
+    payload      TEXT NOT NULL,              -- JSON для 1С
+    delivered    INTEGER DEFAULT 0,
+    attempts     INTEGER DEFAULT 0,
+    http_status  INTEGER DEFAULT 0,
+    message      TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
 -- Накопленный факт: сколько деталей отсканировано по операции+деталь
 CREATE TABLE IF NOT EXISTS facts (
     order_num     INTEGER NOT NULL,
@@ -124,6 +139,7 @@ CREATE INDEX IF NOT EXISTS idx_scan_events_order ON scan_events(operation_1c);
 CREATE INDEX IF NOT EXISTS idx_facts_order ON facts(order_num);
 CREATE INDEX IF NOT EXISTS idx_sessions_open ON shift_sessions(ended_at);
 CREATE INDEX IF NOT EXISTS idx_links_status ON order_links(status);
+CREATE INDEX IF NOT EXISTS idx_outbox_pending ON status_outbox(delivered);
 """
 
 
@@ -413,6 +429,48 @@ class Storage:
             (operation_1c, detail_uid)
         ).fetchone()
         return row["scanned_count"] if row else 0
+
+    # --- status_outbox (очередь отправки в 1С) ------------------------------
+
+    def enqueue_status(self, op_key: str, payload: dict) -> int:
+        """Поставить статус в очередь. Повторный статус операции обновляет запись."""
+        import json as _json
+        now = datetime.now().isoformat()
+        cur = self._conn.execute("""
+            INSERT INTO status_outbox (op_key, payload, delivered, attempts,
+                                       created_at, updated_at)
+            VALUES (?, ?, 0, 0, ?, ?)
+            ON CONFLICT(op_key) DO UPDATE SET
+                payload=excluded.payload, delivered=0, updated_at=excluded.updated_at
+        """, (op_key, _json.dumps(payload, ensure_ascii=False), now, now))
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT id FROM status_outbox WHERE op_key=?", (op_key,)
+        ).fetchone()
+        return row["id"]
+
+    def mark_status_sent(self, outbox_id: int, delivered: bool,
+                         http_status: int = 0, message: str = "") -> None:
+        self._conn.execute("""
+            UPDATE status_outbox
+               SET delivered=?, attempts=attempts+1, http_status=?,
+                   message=?, updated_at=?
+             WHERE id=?
+        """, (int(delivered), http_status, message,
+              datetime.now().isoformat(), outbox_id))
+        self._conn.commit()
+
+    def get_pending_statuses(self, limit: int = 100) -> list[sqlite3.Row]:
+        """Недоставленные статусы — очередь на повторную отправку."""
+        return self._conn.execute(
+            "SELECT * FROM status_outbox WHERE delivered=0 ORDER BY id LIMIT ?",
+            (limit,)
+        ).fetchall()
+
+    def count_delivered_statuses(self) -> int:
+        return self._conn.execute(
+            "SELECT COUNT(*) FROM status_outbox WHERE delivered=1"
+        ).fetchone()[0]
 
     # --- отладка -------------------------------------------------------------
 

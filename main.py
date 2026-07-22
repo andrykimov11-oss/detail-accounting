@@ -128,9 +128,33 @@ def cmd_status(args) -> int:
     payloads = core.closing_payloads(ctx, args.ops)
     if payloads:
         print()
-        print("PAYLOAD для 1С (отправка — Этап B):")
+        print("PAYLOAD для 1С (готовы к отправке):")
         for p in payloads:
             print(f"  {p}")
+    return 0
+
+
+def cmd_push(args) -> int:
+    """Отправить статусы закрытых операций заказа в 1С."""
+    core = _core(args.db)
+    ctx = core.load_order(args.order)
+    if not ctx.details:
+        print(f"Заказ {args.order} не найден в БД.", file=sys.stderr)
+        return 1
+    queued, delivered = core.push_status_to_1c(ctx, args.ops)
+    print(f"Поставлено в очередь: {queued}")
+    print(f"Доставлено в 1С:      {delivered}")
+    if queued > delivered:
+        print(f"  ⚠ не доставлено {queued - delivered} — повторить: "
+              f"python main.py --db {args.db} flush")
+    return 0
+
+
+def cmd_flush(args) -> int:
+    """Повторно отправить недоставленные статусы из очереди."""
+    core = _core(args.db)
+    delivered, remaining = core.flush_1c_queue()
+    print(f"Доставлено: {delivered}, осталось в очереди: {remaining}")
     return 0
 
 
@@ -198,6 +222,18 @@ def cmd_confirm(args) -> int:
     return 0
 
 
+def cmd_drilling(args) -> int:
+    """Нормирование участка присадки из выгрузки Nanxing (.SCX)."""
+    from nanxing_parser import parse_order_folder, format_drilling_report
+
+    panels, report = parse_order_folder(Path(args.folder))
+    if not panels:
+        print("Не найдено ни одного .SCX", file=sys.stderr)
+        return 1
+    print(format_drilling_report(panels, report))
+    return 0
+
+
 def cmd_rules(args) -> int:
     """Построить правила отбора деталей из справочника операций 1С."""
     from operation_rules import format_rules_report
@@ -256,9 +292,21 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument("--ops", nargs="+", required=True, help="операции 1С заказа")
     st.set_defaults(fn=cmd_status)
 
+    ps = sub.add_parser("push", help="отправить статусы закрытых операций в 1С")
+    ps.add_argument("--order", type=int, required=True)
+    ps.add_argument("--ops", nargs="+", required=True)
+    ps.set_defaults(fn=cmd_push)
+
+    sub.add_parser("flush", help="повторить отправку очереди в 1С").set_defaults(
+        fn=cmd_flush)
+
     rl = sub.add_parser("rules", help="правила отбора деталей из справочника 1С")
     rl.add_argument("--areas", required=True, help="xlsx «Операции по участкам»")
     rl.set_defaults(fn=cmd_rules)
+
+    dr = sub.add_parser("drilling", help="нормирование присадки из Nanxing .SCX")
+    dr.add_argument("--folder", required=True, help="папка выгрузки Nanxing")
+    dr.set_defaults(fn=cmd_drilling)
 
     sub.add_parser("stats", help="сводка по БД").set_defaults(fn=cmd_stats)
 

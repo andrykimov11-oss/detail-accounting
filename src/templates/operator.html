@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Учёт деталей — рабочее место</title>
+<style>
+  /*
+   * Эргономика цеха: оператор у станка в 2-3 метрах от экрана, руки в перчатках,
+   * возможна пыль и блики. Отсюда — тёмный фон, крупный шрифт, высокий контраст,
+   * кнопки от 64px, никаких мелких меню и ховеров.
+   */
+  :root {
+    --bg: #0e1116;
+    --panel: #1b212b;
+    --panel-2: #232c39;
+    --text: #f2f5f8;
+    --muted: #9aa7b8;
+    --accent: #2f6df6;
+    --ok: #16a34a;
+    --dup: #d4a017;
+    --over: #e8710a;
+    --err: #dc2626;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: system-ui, "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: 22px; user-select: none;
+  }
+  .screen { display: none; height: 100vh; flex-direction: column; }
+  .screen.active { display: flex; }
+
+  .head {
+    display: flex; align-items: center; gap: 16px;
+    padding: 14px 22px; background: var(--panel);
+    border-bottom: 2px solid #000;
+  }
+  .head .who { font-size: 26px; font-weight: 700; }
+  .head .sub { font-size: 20px; color: var(--muted); }
+  .head .spacer { flex: 1; }
+
+  h1 { font-size: 30px; margin: 22px; font-weight: 700; }
+
+  .grid {
+    display: grid; gap: 16px; padding: 0 22px 22px;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    overflow-y: auto;
+  }
+  .tile {
+    min-height: 92px; border: none; border-radius: 14px;
+    background: var(--panel-2); color: var(--text);
+    font-size: 26px; font-weight: 600; padding: 18px 20px;
+    text-align: left; cursor: pointer;
+  }
+  .tile:active { background: var(--accent); }
+
+  .btn {
+    min-height: 64px; border: none; border-radius: 12px;
+    background: var(--panel-2); color: var(--text);
+    font-size: 22px; font-weight: 600; padding: 0 22px; cursor: pointer;
+  }
+  .btn:active { background: var(--accent); }
+  .btn.warn { background: #3a2530; }
+  .btn.primary { background: var(--accent); }
+
+  /* --- рабочий экран --- */
+  #work { }
+  .op-bar { padding: 16px 22px; background: var(--panel); }
+  .op-bar label { display:block; font-size: 20px; color: var(--muted); margin-bottom: 8px; }
+  .op-list { display: flex; flex-wrap: wrap; gap: 12px; }
+  .op {
+    min-height: 64px; border: 3px solid transparent; border-radius: 12px;
+    background: var(--panel-2); color: var(--text);
+    font-size: 22px; font-weight: 600; padding: 10px 20px; cursor: pointer;
+  }
+  .op.selected { border-color: var(--accent); background: #14233f; }
+
+  .stage { flex: 1; display: flex; gap: 18px; padding: 18px 22px; overflow: hidden; }
+
+  .feedback {
+    flex: 2; border-radius: 18px; padding: 26px;
+    display: flex; flex-direction: column; justify-content: center;
+    background: var(--panel); overflow-y: auto;
+  }
+  .feedback .big { font-size: 54px; font-weight: 800; line-height: 1.1; }
+  .feedback .det { font-size: 30px; margin-top: 18px; }
+  .feedback .count { font-size: 46px; font-weight: 800; margin-top: 14px; }
+  .feedback .msg { font-size: 26px; color: var(--muted); margin-top: 14px; }
+
+  .feedback.ok   { background: var(--ok); color: #04240f; }
+  .feedback.dup  { background: var(--dup); color: #2e2200; }
+  .feedback.over { background: var(--over); color: #2e1400; }
+  .feedback.err  { background: var(--err); color: #2b0606; }
+  .feedback.ok .msg, .feedback.dup .msg, .feedback.over .msg, .feedback.err .msg { color: inherit; opacity: .85; }
+
+  /* fallback-список деталей — крупные строки под палец */
+  .picks { margin-top: 18px; display: flex; flex-direction: column; gap: 12px; }
+  .pick {
+    border: none; border-radius: 12px; text-align: left; cursor: pointer;
+    background: rgba(0,0,0,.28); color: var(--text);
+    padding: 16px 18px; font-size: 24px;
+  }
+  .pick:active { background: #000; }
+  .pick .dim { font-size: 20px; color: var(--muted); margin-top: 6px; }
+
+  .side { flex: 1; background: var(--panel); border-radius: 18px; padding: 20px; overflow-y: auto; }
+  .side h2 { font-size: 22px; margin: 0 0 14px; color: var(--muted); }
+  .prog { margin-bottom: 16px; }
+  .prog .name { font-size: 20px; margin-bottom: 6px; }
+  .prog .bar { height: 22px; border-radius: 11px; background: #0c0f14; overflow: hidden; }
+  .prog .fill { height: 100%; background: var(--accent); }
+  .prog .num { font-size: 20px; color: var(--muted); margin-top: 4px; }
+
+  /* скан-поле: держим фокус всегда, но визуально прячем — печатает сканер */
+  #scanInput {
+    position: absolute; opacity: 0.01; width: 2px; height: 2px;
+    left: 0; top: 0; border: none;
+  }
+  .idle { color: var(--muted); font-size: 40px; font-weight: 700; }
+</style>
+</head>
+<body>
+
+<!-- Скрытое поле, куда «печатает» сканер. Фокус возвращается сюда после -->
+<!-- любого действия — оператор руками в него не вводит. -->
+<input id="scanInput" autocomplete="off" autocapitalize="off" spellcheck="false">
+
+<!-- Экран 1: вход -->
+<section id="login" class="screen active">
+  <h1>Выберите себя</h1>
+  <div id="operatorGrid" class="grid"></div>
+</section>
+
+<!-- Экран 2: выбор участка -->
+<section id="areaScreen" class="screen">
+  <div class="head">
+    <div class="who" id="areaWho"></div>
+    <div class="spacer"></div>
+    <button class="btn" onclick="toLogin()">← Назад</button>
+  </div>
+  <h1>Выберите участок</h1>
+  <div id="areaGrid" class="grid"></div>
+</section>
+
+<!-- Экран 3: рабочий -->
+<section id="work" class="screen">
+  <div class="head">
+    <div>
+      <div class="who" id="workWho"></div>
+      <div class="sub" id="workArea"></div>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn" onclick="newOrder()">Новый заказ</button>
+    <button class="btn warn" onclick="toArea()">Сменить участок</button>
+    <button class="btn warn" onclick="toLogin()">Выйти</button>
+  </div>
+
+  <div class="op-bar">
+    <label>Текущая операция</label>
+    <div id="opList" class="op-list"></div>
+  </div>
+
+  <div class="stage">
+    <div id="feedback" class="feedback">
+      <div class="idle">Готов к сканированию</div>
+    </div>
+    <div class="side">
+      <h2>Прогресс заказа</h2>
+      <div id="progress"><div class="prog"><div class="num">нет активного заказа</div></div></div>
+    </div>
+  </div>
+</section>
+
+<script>
+"use strict";
+
+// --- Состояние рабочего места (в памяти вкладки) ---------------------------
+const state = {
+  operator: null,     // {operator_id, full_name}
+  area: null,         // {area_id, area_name}
+  operations: [],
+  operation: null,    // выбранная текущая операция
+  orderNum: null,     // активный заказ (для панели прогресса)
+};
+
+const $ = (id) => document.getElementById(id);
+const scanInput = $("scanInput");
+
+// Фокус скан-поля не теряется НИКОГДА: сканер печатает только в сфокусированное
+// поле. После любого тапа/клика возвращаем фокус в течение долей секунды.
+function keepFocus() {
+  if ($("work").classList.contains("active")) {
+    setTimeout(() => scanInput.focus(), 30);
+  }
+}
+document.addEventListener("click", keepFocus);
+document.addEventListener("touchend", keepFocus);
+window.addEventListener("focus", keepFocus);
+
+async function api(path, body) {
+  const opt = body
+    ? { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) }
+    : {};
+  const r = await fetch(path, opt);
+  return r.json();
+}
+
+function show(screenId) {
+  document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
+  $(screenId).classList.add("active");
+  keepFocus();
+}
+
+// --- Экран 1: вход ---------------------------------------------------------
+async function loadOperators() {
+  const ops = await api("/api/operators");
+  const grid = $("operatorGrid");
+  grid.innerHTML = "";
+  ops.forEach(o => {
+    const b = document.createElement("button");
+    b.className = "tile";
+    b.textContent = o.full_name;
+    b.onclick = () => login(o);
+    grid.appendChild(b);
+  });
+}
+
+async function login(op) {
+  const res = await api("/api/login", { operator_id: op.operator_id });
+  state.operator = res.operator;
+  renderAreas(res.areas);
+  $("areaWho").textContent = res.operator.full_name;
+  show("areaScreen");
+}
+
+function toLogin() {
+  state.operator = null; state.area = null; state.orderNum = null;
+  show("login");
+}
+
+// --- Экран 2: участки ------------------------------------------------------
+function renderAreas(areas) {
+  const grid = $("areaGrid");
+  grid.innerHTML = "";
+  areas.forEach(a => {
+    const b = document.createElement("button");
+    b.className = "tile";
+    b.textContent = a.area_name;
+    b.onclick = () => openShift(a);
+    grid.appendChild(b);
+  });
+}
+
+async function toArea() {
+  const res = await api("/api/login", { operator_id: state.operator.operator_id });
+  renderAreas(res.areas);
+  show("areaScreen");
+}
+
+async function openShift(area) {
+  const res = await api("/api/shift", {
+    operator_id: state.operator.operator_id, area_id: area.area_id
+  });
+  state.area = res.area;
+  state.operations = res.operations;
+  state.operation = res.operations[0] || null;
+  state.orderNum = null;
+  $("workWho").textContent = state.operator.full_name;
+  $("workArea").textContent = res.area.area_name;
+  renderOperations();
+  renderProgress(null);
+  setFeedbackIdle();
+  show("work");
+}
+
+// --- Экран 3: рабочий ------------------------------------------------------
+function renderOperations() {
+  const list = $("opList");
+  list.innerHTML = "";
+  state.operations.forEach(op => {
+    const b = document.createElement("button");
+    b.className = "op" + (op === state.operation ? " selected" : "");
+    b.textContent = op;
+    b.onclick = () => { state.operation = op; renderOperations(); keepFocus(); };
+    list.appendChild(b);
+  });
+}
+
+function setFeedbackIdle() {
+  const fb = $("feedback");
+  fb.className = "feedback";
+  fb.innerHTML = '<div class="idle">Готов к сканированию</div>';
+}
+
+// Сборка событий сканера: он «печатает» символы и завершает Enter.
+scanInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    const code = scanInput.value.trim();
+    scanInput.value = "";
+    if (code) sendScan(code);
+  }
+});
+
+async function sendScan(qr) {
+  if (!state.operation) { flashError("Выберите операцию"); return; }
+  const res = await api("/api/scan", {
+    qr_code: qr,
+    area_id: state.area.area_id,
+    operator_id: state.operator.operator_id,
+    operation_1c: state.operation,
+  });
+  handleResult(res);
+}
+
+async function pickDetail(detail_uid) {
+  const res = await api("/api/pick-detail", {
+    detail_uid: detail_uid,
+    area_id: state.area.area_id,
+    operator_id: state.operator.operator_id,
+    operation_1c: state.operation,
+  });
+  handleResult(res);
+}
+
+async function newOrder() {
+  await api("/api/new-order", { operator_id: state.operator.operator_id });
+  state.orderNum = null;
+  renderProgress(null);
+  setFeedbackIdle();
+  keepFocus();
+}
+
+// Крупная обратная связь по статусу скана (читается с 2-3 метров).
+function handleResult(res) {
+  const fb = $("feedback");
+  const det = res.detail;
+  const detLine = det
+    ? `Поз. ${det.pos_no} · ${det.length}×${det.width}×${det.thickness} · ${det.material}`
+    : "";
+
+  if (res.status === "accepted") {
+    fb.className = "feedback ok";
+    fb.innerHTML =
+      `<div class="big">✓ Принято</div>` +
+      (detLine ? `<div class="det">${detLine}</div>` : "") +
+      `<div class="count">Отсканировано ${res.scanned_count} из ${res.planned_qty}</div>`;
+  } else if (res.status === "duplicate") {
+    fb.className = "feedback dup";
+    fb.innerHTML = `<div class="big">↺ Повтор</div><div class="msg">Не засчитано — деталь уже сканировали</div>`;
+  } else if (res.status === "overplan") {
+    fb.className = "feedback over";
+    fb.innerHTML =
+      `<div class="big">! Превышение плана</div>` +
+      (detLine ? `<div class="det">${detLine}</div>` : "") +
+      `<div class="count">${res.scanned_count} при плане ${res.planned_qty}</div>` +
+      `<div class="msg">Проверьте деталь</div>`;
+  } else if (res.suggest && res.suggest.length) {
+    // UNKNOWN_QR / WRONG_OPERATION: показать список деталей заказа под палец.
+    fb.className = "feedback err";
+    let html = `<div class="big">Деталь не распознана</div>` +
+               `<div class="msg">Выберите деталь из списка</div><div class="picks">`;
+    res.suggest.forEach(d => {
+      html += `<button class="pick" onclick="pickDetail('${d.detail_uid}')">` +
+              `Поз. ${d.pos_no} · план ${d.qty}` +
+              `<div class="dim">${d.length}×${d.width}×${d.thickness} · ${d.material}</div>` +
+              `</button>`;
+    });
+    html += `</div>`;
+    fb.innerHTML = html;
+  } else {
+    fb.className = "feedback err";
+    fb.innerHTML = `<div class="big">✕ Ошибка</div><div class="msg">${res.message || "Скан не засчитан"}</div>`;
+  }
+
+  // Панель прогресса обновляется по активному заказу.
+  if (res.order_num) {
+    state.orderNum = res.order_num;
+    refreshProgress();
+  }
+  keepFocus();
+}
+
+function flashError(text) {
+  const fb = $("feedback");
+  fb.className = "feedback err";
+  fb.innerHTML = `<div class="big">✕</div><div class="msg">${text}</div>`;
+  keepFocus();
+}
+
+async function refreshProgress() {
+  if (!state.orderNum) { renderProgress(null); return; }
+  const res = await api(`/api/status?order_num=${state.orderNum}`);
+  renderProgress(res.operations || []);
+}
+
+function renderProgress(operations) {
+  const box = $("progress");
+  if (!operations || !operations.length) {
+    box.innerHTML = `<div class="prog"><div class="num">${state.orderNum ? "заказ " + state.orderNum : "нет активного заказа"}</div></div>`;
+    return;
+  }
+  box.innerHTML = "";
+  operations.forEach(o => {
+    const div = document.createElement("div");
+    div.className = "prog";
+    div.innerHTML =
+      `<div class="name">${o.operation_1c}</div>` +
+      `<div class="bar"><div class="fill" style="width:${Math.min(100, o.progress_pct)}%"></div></div>` +
+      `<div class="num">${o.scanned_total} / ${o.planned_total} шт (${o.progress_pct}%)</div>`;
+    box.appendChild(div);
+  });
+}
+
+// --- старт ------------------------------------------------------------------
+loadOperators();
+</script>
+</body>
+</html>

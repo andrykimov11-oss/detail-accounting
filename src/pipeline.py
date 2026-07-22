@@ -327,14 +327,34 @@ class ProductionCore:
         plans, _ = self.order_plan(ctx, operations_1c, rules=rules)
         return [calc_operation_status(p, ctx, now=now) for p in plans]
 
-    def closing_payloads(self, ctx: OrderContext,
-                         operations_1c: list[str]) -> list[dict]:
-        """
-        Payload'ы для 1С по операциям, готовым к закрытию.
-        Отправка — задача Этапа B (HTTP-клиент), здесь только формирование.
-        """
+    def closing_payloads(self, ctx: OrderContext, operations_1c: list[str],
+                         rules: dict | None = None) -> list[dict]:
+        """Payload'ы для 1С по операциям, готовым к закрытию."""
         return [
             to_1c_payload(s)
-            for s in self.order_status(ctx, operations_1c)
+            for s in self.order_status(ctx, operations_1c, rules=rules)
             if s.is_closing
         ]
+
+    def push_status_to_1c(self, ctx: OrderContext, operations_1c: list[str],
+                          transport=None, rules: dict | None = None) -> tuple[int, int]:
+        """
+        Отправить статусы закрытых операций заказа в 1С.
+
+        Транспорт по умолчанию — заглушка-лог (HTTP-сервис 1С может быть ещё
+        не готов). Статусы кладутся в очередь с гарантией доставки: не
+        отправленное переживает недоступность 1С и уходит при следующей
+        попытке. Возвращает (поставлено в очередь, доставлено).
+        """
+        from one_c_writer import LogTransport, StatusWriter  # noqa: PLC0415
+
+        writer = StatusWriter(self.storage, transport or LogTransport())
+        payloads = self.closing_payloads(ctx, operations_1c, rules=rules)
+        return writer.push_closing_operations(payloads)
+
+    def flush_1c_queue(self, transport=None) -> tuple[int, int]:
+        """Повторно отправить недоставленные статусы из очереди."""
+        from one_c_writer import LogTransport, StatusWriter  # noqa: PLC0415
+
+        writer = StatusWriter(self.storage, transport or LogTransport())
+        return writer.flush_pending()
