@@ -222,6 +222,47 @@ def cmd_confirm(args) -> int:
     return 0
 
 
+def cmd_operators(args) -> int:
+    """Список операторов в справочнике."""
+    core = _core(args.db)
+    rows = core.storage.get_operators(active_only=False)
+    if not rows:
+        print("Справочник операторов пуст. Заведите: "
+              "python src/import_operators.py --db ... --plan ...")
+        return 0
+    print(f"Операторов: {len(rows)}\n")
+    for r in rows:
+        mark = " " if r["is_active"] else "✗"
+        print(f"  {mark} {r['operator_id']:<22} {r['full_name']}")
+    return 0
+
+
+def cmd_add_operator(args) -> int:
+    """Завести одного оператора вручную (новый сотрудник)."""
+    from import_operators import make_operator_id
+
+    core = _core(args.db)
+    taken = {r["operator_id"] for r in core.storage.get_operators(active_only=False)}
+    operator_id = args.id or make_operator_id(args.name, taken)
+    core.storage.upsert_operator(operator_id, args.name, is_active=True)
+    print(f"✓ заведён оператор: {operator_id}  {args.name}")
+    return 0
+
+
+def cmd_import_operators(args) -> int:
+    """Массовый импорт операторов из выгрузки 1С (обёртка над скриптом)."""
+    from import_operators import import_operators, format_report
+
+    core = _core(args.db)
+    report = import_operators(
+        core.storage, Path(args.plan),
+        area=args.area,
+        areas_path=Path(args.areas) if args.areas else None,
+    )
+    print(format_report(report, args.area))
+    return 0
+
+
 def cmd_drilling(args) -> int:
     """Нормирование участка присадки из выгрузки Nanxing (.SCX)."""
     from nanxing_parser import parse_order_folder, format_drilling_report
@@ -303,6 +344,19 @@ def main(argv: list[str] | None = None) -> int:
     rl = sub.add_parser("rules", help="правила отбора деталей из справочника 1С")
     rl.add_argument("--areas", required=True, help="xlsx «Операции по участкам»")
     rl.set_defaults(fn=cmd_rules)
+
+    sub.add_parser("operators", help="список операторов").set_defaults(fn=cmd_operators)
+
+    ao = sub.add_parser("add-operator", help="завести одного оператора")
+    ao.add_argument("--name", required=True, help="ФИО оператора")
+    ao.add_argument("--id", default=None, help="ID (по умолчанию из ФИО)")
+    ao.set_defaults(fn=cmd_add_operator)
+
+    io = sub.add_parser("import-operators", help="массовый импорт операторов из 1С")
+    io.add_argument("--plan", required=True, help="xlsx «производственные операции»")
+    io.add_argument("--areas", default=None, help="xlsx «Операции по участкам»")
+    io.add_argument("--area", default=None, help="только операторы этого участка")
+    io.set_defaults(fn=cmd_import_operators)
 
     dr = sub.add_parser("drilling", help="нормирование присадки из Nanxing .SCX")
     dr.add_argument("--folder", required=True, help="папка выгрузки Nanxing")

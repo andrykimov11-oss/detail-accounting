@@ -6,126 +6,118 @@
 <title>Учёт деталей — рабочее место</title>
 <style>
   /*
-   * Эргономика цеха: оператор у станка в 2-3 метрах от экрана, руки в перчатках,
-   * возможна пыль и блики. Отсюда — тёмный фон, крупный шрифт, высокий контраст,
-   * кнопки от 64px, никаких мелких меню и ховеров.
+   * Мобильный интерфейс: телефон в руке оператора, сканирование камерой.
+   * Отсюда — вертикальная раскладка в одну колонку, крупные тап-зоны (от 56px),
+   * высокий контраст (цех, блики), камера сверху, статус скана — большой блок.
    */
   :root {
-    --bg: #0e1116;
-    --panel: #1b212b;
-    --panel-2: #232c39;
-    --text: #f2f5f8;
-    --muted: #9aa7b8;
-    --accent: #2f6df6;
-    --ok: #16a34a;
-    --dup: #d4a017;
-    --over: #e8710a;
-    --err: #dc2626;
+    --bg: #0e1116; --panel: #1b212b; --panel-2: #232c39;
+    --text: #f2f5f8; --muted: #9aa7b8; --accent: #2f6df6;
+    --ok: #16a34a; --dup: #d4a017; --over: #e8710a; --err: #dc2626;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body {
-    margin: 0; height: 100%;
-    background: var(--bg); color: var(--text);
+    margin: 0; min-height: 100%; background: var(--bg); color: var(--text);
     font-family: system-ui, "Segoe UI", Roboto, Arial, sans-serif;
-    font-size: 22px; user-select: none;
+    font-size: 18px; user-select: none; -webkit-user-select: none;
   }
-  .screen { display: none; height: 100vh; flex-direction: column; }
+  .screen { display: none; min-height: 100vh; flex-direction: column; }
   .screen.active { display: flex; }
 
   .head {
-    display: flex; align-items: center; gap: 16px;
-    padding: 14px 22px; background: var(--panel);
-    border-bottom: 2px solid #000;
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 16px; background: var(--panel); border-bottom: 2px solid #000;
+    position: sticky; top: 0; z-index: 5;
   }
-  .head .who { font-size: 26px; font-weight: 700; }
-  .head .sub { font-size: 20px; color: var(--muted); }
+  .head .who { font-size: 18px; font-weight: 700; line-height: 1.1; }
+  .head .sub { font-size: 15px; color: var(--muted); }
   .head .spacer { flex: 1; }
 
-  h1 { font-size: 30px; margin: 22px; font-weight: 700; }
+  h1 { font-size: 24px; margin: 18px 16px; font-weight: 700; }
 
-  .grid {
-    display: grid; gap: 16px; padding: 0 22px 22px;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    overflow-y: auto;
-  }
+  .grid { display: flex; flex-direction: column; gap: 12px; padding: 0 16px 16px; }
   .tile {
-    min-height: 92px; border: none; border-radius: 14px;
+    min-height: 72px; border: none; border-radius: 14px;
     background: var(--panel-2); color: var(--text);
-    font-size: 26px; font-weight: 600; padding: 18px 20px;
+    font-size: 22px; font-weight: 600; padding: 16px 18px;
     text-align: left; cursor: pointer;
   }
   .tile:active { background: var(--accent); }
 
   .btn {
-    min-height: 64px; border: none; border-radius: 12px;
+    min-height: 48px; border: none; border-radius: 10px;
     background: var(--panel-2); color: var(--text);
-    font-size: 22px; font-weight: 600; padding: 0 22px; cursor: pointer;
+    font-size: 16px; font-weight: 600; padding: 0 16px; cursor: pointer;
   }
   .btn:active { background: var(--accent); }
   .btn.warn { background: #3a2530; }
-  .btn.primary { background: var(--accent); }
 
   /* --- рабочий экран --- */
-  #work { }
-  .op-bar { padding: 16px 22px; background: var(--panel); }
-  .op-bar label { display:block; font-size: 20px; color: var(--muted); margin-bottom: 8px; }
-  .op-list { display: flex; flex-wrap: wrap; gap: 12px; }
+  .op-bar { padding: 12px 16px; background: var(--panel); }
+  .op-bar label { display:block; font-size: 15px; color: var(--muted); margin-bottom: 8px; }
+  .op-list { display: flex; flex-direction: column; gap: 10px; }
   .op {
-    min-height: 64px; border: 3px solid transparent; border-radius: 12px;
+    min-height: 56px; border: 3px solid transparent; border-radius: 12px;
     background: var(--panel-2); color: var(--text);
-    font-size: 22px; font-weight: 600; padding: 10px 20px; cursor: pointer;
+    font-size: 18px; font-weight: 600; padding: 12px 16px; cursor: pointer;
+    text-align: left;
   }
   .op.selected { border-color: var(--accent); background: #14233f; }
 
-  .stage { flex: 1; display: flex; gap: 18px; padding: 18px 22px; overflow: hidden; }
+  /* камера */
+  #cam {
+    width: 100%; background: #000; position: relative;
+    aspect-ratio: 4/3; overflow: hidden;
+  }
+  #reader { width: 100%; height: 100%; }
+  #reader video { width: 100% !important; height: 100% !important; object-fit: cover; }
+  .cam-hint {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    text-align: center; font-size: 15px; color: #cdd6e2;
+    background: rgba(0,0,0,.5); padding: 8px;
+  }
+  .cam-off {
+    display: flex; align-items: center; justify-content: center;
+    height: 100%; color: var(--muted); font-size: 18px; text-align: center;
+    padding: 20px;
+  }
 
   .feedback {
-    flex: 2; border-radius: 18px; padding: 26px;
-    display: flex; flex-direction: column; justify-content: center;
-    background: var(--panel); overflow-y: auto;
+    margin: 14px 16px; border-radius: 16px; padding: 20px;
+    background: var(--panel); min-height: 120px;
   }
-  .feedback .big { font-size: 54px; font-weight: 800; line-height: 1.1; }
-  .feedback .det { font-size: 30px; margin-top: 18px; }
-  .feedback .count { font-size: 46px; font-weight: 800; margin-top: 14px; }
-  .feedback .msg { font-size: 26px; color: var(--muted); margin-top: 14px; }
-
+  .feedback .big { font-size: 40px; font-weight: 800; line-height: 1.1; }
+  .feedback .det { font-size: 20px; margin-top: 12px; }
+  .feedback .count { font-size: 34px; font-weight: 800; margin-top: 10px; }
+  .feedback .msg { font-size: 18px; color: var(--muted); margin-top: 10px; }
   .feedback.ok   { background: var(--ok); color: #04240f; }
   .feedback.dup  { background: var(--dup); color: #2e2200; }
   .feedback.over { background: var(--over); color: #2e1400; }
   .feedback.err  { background: var(--err); color: #2b0606; }
-  .feedback.ok .msg, .feedback.dup .msg, .feedback.over .msg, .feedback.err .msg { color: inherit; opacity: .85; }
+  .feedback.ok .msg,.feedback.dup .msg,.feedback.over .msg,.feedback.err .msg { color: inherit; opacity: .85; }
+  .idle { color: var(--muted); font-size: 30px; font-weight: 700; }
 
-  /* fallback-список деталей — крупные строки под палец */
-  .picks { margin-top: 18px; display: flex; flex-direction: column; gap: 12px; }
+  .picks { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
   .pick {
     border: none; border-radius: 12px; text-align: left; cursor: pointer;
-    background: rgba(0,0,0,.28); color: var(--text);
-    padding: 16px 18px; font-size: 24px;
+    background: rgba(0,0,0,.28); color: var(--text); padding: 14px 16px; font-size: 20px;
   }
   .pick:active { background: #000; }
-  .pick .dim { font-size: 20px; color: var(--muted); margin-top: 6px; }
+  .pick .dim { font-size: 16px; color: var(--muted); margin-top: 5px; }
 
-  .side { flex: 1; background: var(--panel); border-radius: 18px; padding: 20px; overflow-y: auto; }
-  .side h2 { font-size: 22px; margin: 0 0 14px; color: var(--muted); }
-  .prog { margin-bottom: 16px; }
-  .prog .name { font-size: 20px; margin-bottom: 6px; }
-  .prog .bar { height: 22px; border-radius: 11px; background: #0c0f14; overflow: hidden; }
+  .prog { margin: 0 16px 16px; background: var(--panel); border-radius: 16px; padding: 16px; }
+  .prog h2 { font-size: 16px; margin: 0 0 12px; color: var(--muted); font-weight: 600; }
+  .prog .row { margin-bottom: 14px; }
+  .prog .name { font-size: 16px; margin-bottom: 6px; }
+  .prog .bar { height: 18px; border-radius: 9px; background: #0c0f14; overflow: hidden; }
   .prog .fill { height: 100%; background: var(--accent); }
-  .prog .num { font-size: 20px; color: var(--muted); margin-top: 4px; }
+  .prog .num { font-size: 15px; color: var(--muted); margin-top: 4px; }
 
-  /* скан-поле: держим фокус всегда, но визуально прячем — печатает сканер */
-  #scanInput {
-    position: absolute; opacity: 0.01; width: 2px; height: 2px;
-    left: 0; top: 0; border: none;
-  }
-  .idle { color: var(--muted); font-size: 40px; font-weight: 700; }
+  .foot { display: flex; gap: 10px; padding: 0 16px 20px; }
+  .foot .btn { flex: 1; }
 </style>
 </head>
 <body>
-
-<!-- Скрытое поле, куда «печатает» сканер. Фокус возвращается сюда после -->
-<!-- любого действия — оператор руками в него не вводит. -->
-<input id="scanInput" autocomplete="off" autocapitalize="off" spellcheck="false">
 
 <!-- Экран 1: вход -->
 <section id="login" class="screen active">
@@ -152,9 +144,8 @@
       <div class="sub" id="workArea"></div>
     </div>
     <div class="spacer"></div>
-    <button class="btn" onclick="newOrder()">Новый заказ</button>
-    <button class="btn warn" onclick="toArea()">Сменить участок</button>
-    <button class="btn warn" onclick="toLogin()">Выйти</button>
+    <button class="btn warn" onclick="toArea()">Участок</button>
+    <button class="btn warn" onclick="toLogin()">Выход</button>
   </div>
 
   <div class="op-bar">
@@ -162,42 +153,47 @@
     <div id="opList" class="op-list"></div>
   </div>
 
-  <div class="stage">
-    <div id="feedback" class="feedback">
-      <div class="idle">Готов к сканированию</div>
-    </div>
-    <div class="side">
-      <h2>Прогресс заказа</h2>
-      <div id="progress"><div class="prog"><div class="num">нет активного заказа</div></div></div>
-    </div>
+  <div id="cam">
+    <div id="reader"></div>
+    <div id="camOff" class="cam-off">Наведите камеру на QR-код бирки</div>
+    <div class="cam-hint">Держите QR в кадре — скан произойдёт сам</div>
+  </div>
+
+  <div id="feedback" class="feedback">
+    <div class="idle">Готов к сканированию</div>
+  </div>
+
+  <div class="prog">
+    <h2>Прогресс заказа</h2>
+    <div id="progress"><div class="num">нет активного заказа</div></div>
+  </div>
+
+  <div class="foot">
+    <button class="btn" onclick="newOrder()">Новый заказ</button>
+    <button class="btn" id="manualBtn" onclick="showManual()">Бирка не читается</button>
   </div>
 </section>
 
+<script src="/static/html5-qrcode.min.js" onerror="loadQrFallback()"></script>
 <script>
 "use strict";
 
-// --- Состояние рабочего места (в памяти вкладки) ---------------------------
-const state = {
-  operator: null,     // {operator_id, full_name}
-  area: null,         // {area_id, area_name}
-  operations: [],
-  operation: null,    // выбранная текущая операция
-  orderNum: null,     // активный заказ (для панели прогресса)
-};
-
-const $ = (id) => document.getElementById(id);
-const scanInput = $("scanInput");
-
-// Фокус скан-поля не теряется НИКОГДА: сканер печатает только в сфокусированное
-// поле. После любого тапа/клика возвращаем фокус в течение долей секунды.
-function keepFocus() {
-  if ($("work").classList.contains("active")) {
-    setTimeout(() => scanInput.focus(), 30);
-  }
+// html5-qrcode: сначала локальный файл (офлайн-цех), при отсутствии — CDN.
+function loadQrFallback() {
+  var s = document.createElement("script");
+  s.src = "https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js";
+  document.head.appendChild(s);
 }
-document.addEventListener("click", keepFocus);
-document.addEventListener("touchend", keepFocus);
-window.addEventListener("focus", keepFocus);
+
+const state = {
+  operator: null, area: null, operations: [], operation: null, orderNum: null,
+};
+const $ = (id) => document.getElementById(id);
+
+let scanner = null;         // экземпляр Html5Qrcode
+let lastCode = "";          // защита от повторного срабатывания одной бирки
+let lastAt = 0;
+let busy = false;           // пока идёт запрос — новые сканы игнорируем
 
 async function api(path, body) {
   const opt = body
@@ -210,7 +206,7 @@ async function api(path, body) {
 function show(screenId) {
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
   $(screenId).classList.add("active");
-  keepFocus();
+  if (screenId !== "work") stopCamera();
 }
 
 // --- Экран 1: вход ---------------------------------------------------------
@@ -220,13 +216,11 @@ async function loadOperators() {
   grid.innerHTML = "";
   ops.forEach(o => {
     const b = document.createElement("button");
-    b.className = "tile";
-    b.textContent = o.full_name;
+    b.className = "tile"; b.textContent = o.full_name;
     b.onclick = () => login(o);
     grid.appendChild(b);
   });
 }
-
 async function login(op) {
   const res = await api("/api/login", { operator_id: op.operator_id });
   state.operator = res.operator;
@@ -234,7 +228,6 @@ async function login(op) {
   $("areaWho").textContent = res.operator.full_name;
   show("areaScreen");
 }
-
 function toLogin() {
   state.operator = null; state.area = null; state.orderNum = null;
   show("login");
@@ -246,19 +239,16 @@ function renderAreas(areas) {
   grid.innerHTML = "";
   areas.forEach(a => {
     const b = document.createElement("button");
-    b.className = "tile";
-    b.textContent = a.area_name;
+    b.className = "tile"; b.textContent = a.area_name;
     b.onclick = () => openShift(a);
     grid.appendChild(b);
   });
 }
-
 async function toArea() {
   const res = await api("/api/login", { operator_id: state.operator.operator_id });
   renderAreas(res.areas);
   show("areaScreen");
 }
-
 async function openShift(area) {
   const res = await api("/api/shift", {
     operator_id: state.operator.operator_id, area_id: area.area_id
@@ -273,6 +263,7 @@ async function openShift(area) {
   renderProgress(null);
   setFeedbackIdle();
   show("work");
+  startCamera();
 }
 
 // --- Экран 3: рабочий ------------------------------------------------------
@@ -283,57 +274,104 @@ function renderOperations() {
     const b = document.createElement("button");
     b.className = "op" + (op === state.operation ? " selected" : "");
     b.textContent = op;
-    b.onclick = () => { state.operation = op; renderOperations(); keepFocus(); };
+    b.onclick = () => { state.operation = op; renderOperations(); };
     list.appendChild(b);
   });
 }
-
 function setFeedbackIdle() {
   const fb = $("feedback");
   fb.className = "feedback";
   fb.innerHTML = '<div class="idle">Готов к сканированию</div>';
 }
 
-// Сборка событий сканера: он «печатает» символы и завершает Enter.
-scanInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") {
-    e.preventDefault();
-    const code = scanInput.value.trim();
-    scanInput.value = "";
-    if (code) sendScan(code);
+// --- Камера ----------------------------------------------------------------
+function startCamera() {
+  if (typeof Html5Qrcode === "undefined") {
+    // библиотека ещё не загрузилась — подождём и повторим
+    setTimeout(startCamera, 400);
+    return;
   }
-});
+  if (scanner) return;
+  scanner = new Html5Qrcode("reader", { verbose: false });
+  const config = { fps: 10, qrbox: { width: 220, height: 220 } };
+  scanner.start({ facingMode: "environment" }, config, onDecoded, () => {})
+    .then(() => { $("camOff").style.display = "none"; })
+    .catch(err => {
+      $("camOff").innerHTML =
+        "Камера недоступна.<br>Проверьте разрешение камеры в браузере,<br>" +
+        "адрес должен быть https://<br><br>" +
+        "Пока используйте кнопку «Бирка не читается».";
+    });
+}
+function stopCamera() {
+  if (scanner) {
+    scanner.stop().then(() => { scanner.clear(); scanner = null; }).catch(() => { scanner = null; });
+  }
+}
+
+// Камера декодирует QR много раз в секунду. Защита от повторов:
+// один и тот же код в течение 2,5с игнорируем; пока идёт запрос — тоже.
+function onDecoded(code) {
+  const now = Date.now();
+  if (busy) return;
+  if (code === lastCode && (now - lastAt) < 2500) return;
+  lastCode = code; lastAt = now;
+  sendScan(code.trim());
+}
 
 async function sendScan(qr) {
   if (!state.operation) { flashError("Выберите операцию"); return; }
-  const res = await api("/api/scan", {
-    qr_code: qr,
-    area_id: state.area.area_id,
-    operator_id: state.operator.operator_id,
-    operation_1c: state.operation,
-  });
-  handleResult(res);
+  busy = true;
+  try {
+    const res = await api("/api/scan", {
+      qr_code: qr,
+      area_id: state.area.area_id,
+      operator_id: state.operator.operator_id,
+      operation_1c: state.operation,
+    });
+    handleResult(res);
+  } finally {
+    setTimeout(() => { busy = false; }, 600);
+  }
 }
 
 async function pickDetail(detail_uid) {
   const res = await api("/api/pick-detail", {
-    detail_uid: detail_uid,
-    area_id: state.area.area_id,
-    operator_id: state.operator.operator_id,
-    operation_1c: state.operation,
+    detail_uid, area_id: state.area.area_id,
+    operator_id: state.operator.operator_id, operation_1c: state.operation,
   });
   handleResult(res);
+}
+
+// Кнопка «Бирка не читается» — показать список деталей заказа для выбора рукой.
+async function showManual() {
+  if (!state.orderNum) {
+    flashError("Сначала отсканируйте одну бирку заказа");
+    return;
+  }
+  const res = await api(`/api/status?order_num=${state.orderNum}`);
+  // используем тот же fallback-механизм: дергаем scan с заведомо неизвестным QR,
+  // чтобы бэкенд вернул список деталей операции
+  const probe = await api("/api/scan", {
+    qr_code: "____manual____",
+    area_id: state.area.area_id,
+    operator_id: state.operator.operator_id, operation_1c: state.operation,
+  });
+  if (probe.suggest && probe.suggest.length) {
+    renderPicks(probe.suggest, "Выберите деталь вручную");
+  } else {
+    flashError("Список деталей недоступен");
+  }
 }
 
 async function newOrder() {
   await api("/api/new-order", { operator_id: state.operator.operator_id });
   state.orderNum = null;
+  lastCode = "";
   renderProgress(null);
   setFeedbackIdle();
-  keepFocus();
 }
 
-// Крупная обратная связь по статусу скана (читается с 2-3 метров).
 function handleResult(res) {
   const fb = $("feedback");
   const det = res.detail;
@@ -343,51 +381,56 @@ function handleResult(res) {
 
   if (res.status === "accepted") {
     fb.className = "feedback ok";
-    fb.innerHTML =
-      `<div class="big">✓ Принято</div>` +
+    fb.innerHTML = `<div class="big">✓ Принято</div>` +
       (detLine ? `<div class="det">${detLine}</div>` : "") +
       `<div class="count">Отсканировано ${res.scanned_count} из ${res.planned_qty}</div>`;
+    beep();
   } else if (res.status === "duplicate") {
     fb.className = "feedback dup";
     fb.innerHTML = `<div class="big">↺ Повтор</div><div class="msg">Не засчитано — деталь уже сканировали</div>`;
   } else if (res.status === "overplan") {
     fb.className = "feedback over";
-    fb.innerHTML =
-      `<div class="big">! Превышение плана</div>` +
+    fb.innerHTML = `<div class="big">! Превышение</div>` +
       (detLine ? `<div class="det">${detLine}</div>` : "") +
       `<div class="count">${res.scanned_count} при плане ${res.planned_qty}</div>` +
       `<div class="msg">Проверьте деталь</div>`;
   } else if (res.suggest && res.suggest.length) {
-    // UNKNOWN_QR / WRONG_OPERATION: показать список деталей заказа под палец.
-    fb.className = "feedback err";
-    let html = `<div class="big">Деталь не распознана</div>` +
-               `<div class="msg">Выберите деталь из списка</div><div class="picks">`;
-    res.suggest.forEach(d => {
-      html += `<button class="pick" onclick="pickDetail('${d.detail_uid}')">` +
-              `Поз. ${d.pos_no} · план ${d.qty}` +
-              `<div class="dim">${d.length}×${d.width}×${d.thickness} · ${d.material}</div>` +
-              `</button>`;
-    });
-    html += `</div>`;
-    fb.innerHTML = html;
+    renderPicks(res.suggest, "Деталь не распознана");
   } else {
     fb.className = "feedback err";
     fb.innerHTML = `<div class="big">✕ Ошибка</div><div class="msg">${res.message || "Скан не засчитан"}</div>`;
   }
 
-  // Панель прогресса обновляется по активному заказу.
-  if (res.order_num) {
-    state.orderNum = res.order_num;
-    refreshProgress();
-  }
-  keepFocus();
+  if (res.order_num) { state.orderNum = res.order_num; refreshProgress(); }
+}
+
+function renderPicks(suggest, title) {
+  const fb = $("feedback");
+  fb.className = "feedback err";
+  let html = `<div class="big">${title}</div><div class="msg">Выберите деталь из списка</div><div class="picks">`;
+  suggest.forEach(d => {
+    html += `<button class="pick" onclick="pickDetail('${d.detail_uid}')">` +
+            `Поз. ${d.pos_no} · план ${d.qty}` +
+            `<div class="dim">${d.length}×${d.width}×${d.thickness} · ${d.material}</div></button>`;
+  });
+  fb.innerHTML = html + `</div>`;
 }
 
 function flashError(text) {
   const fb = $("feedback");
   fb.className = "feedback err";
   fb.innerHTML = `<div class="big">✕</div><div class="msg">${text}</div>`;
-  keepFocus();
+}
+
+// Короткий звук подтверждения — оператор не всегда смотрит на экран.
+function beep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.value = 880; o.connect(g); g.connect(ctx.destination);
+    g.gain.setValueAtTime(0.15, ctx.currentTime);
+    o.start(); o.stop(ctx.currentTime + 0.12);
+  } catch (e) {}
 }
 
 async function refreshProgress() {
@@ -395,26 +438,23 @@ async function refreshProgress() {
   const res = await api(`/api/status?order_num=${state.orderNum}`);
   renderProgress(res.operations || []);
 }
-
 function renderProgress(operations) {
   const box = $("progress");
   if (!operations || !operations.length) {
-    box.innerHTML = `<div class="prog"><div class="num">${state.orderNum ? "заказ " + state.orderNum : "нет активного заказа"}</div></div>`;
+    box.innerHTML = `<div class="num">${state.orderNum ? "заказ " + state.orderNum : "нет активного заказа"}</div>`;
     return;
   }
   box.innerHTML = "";
   operations.forEach(o => {
     const div = document.createElement("div");
-    div.className = "prog";
-    div.innerHTML =
-      `<div class="name">${o.operation_1c}</div>` +
+    div.className = "row";
+    div.innerHTML = `<div class="name">${o.operation_1c}</div>` +
       `<div class="bar"><div class="fill" style="width:${Math.min(100, o.progress_pct)}%"></div></div>` +
       `<div class="num">${o.scanned_total} / ${o.planned_total} шт (${o.progress_pct}%)</div>`;
     box.appendChild(div);
   });
 }
 
-// --- старт ------------------------------------------------------------------
 loadOperators();
 </script>
 </body>

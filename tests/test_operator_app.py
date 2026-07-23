@@ -86,7 +86,9 @@ def _scan(client, qr_code, operation):
 def test_index_serves_page(client):
     r = client.get("/")
     assert r.status_code == 200
-    assert b"scanInput" in r.data
+    # мобильный интерфейс со сканированием камерой
+    assert b"reader" in r.data          # контейнер камеры html5-qrcode
+    assert b"Html5Qrcode" in r.data
 
 
 def test_operators_list(client):

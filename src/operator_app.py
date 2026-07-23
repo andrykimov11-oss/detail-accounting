@@ -2,10 +2,13 @@
 Веб-интерфейс оператора у станка.
 
 Тонкая обёртка над ProductionCore: отдаёт JSON, всю бизнес-логику держит
-ядро. Выбор Flask (а не Streamlit) продиктован железом: сканер = эмуляция
-клавиатуры, он «печатает» текст и жмёт Enter в сфокусированное поле. Нужна
-мгновенная реакция без перезапуска скрипта и удержание фокуса — со Streamlit,
-который на каждое действие перерисовывает страницу, это неудобно.
+ядро. Клиент — браузер телефона оператора: страница открывается в мобильном
+браузере, QR сканируется камерой (html5-qrcode в templates/operator.html).
+
+Развёртывание: один сервер в цехе + телефоны как браузерные клиенты в общей
+Wi-Fi. База одна, поэтому счётчик по заказу общий. Камере нужен HTTPS —
+сервер поднимается с самоподписанным сертификатом (см. _ensure_cert и
+docs/Развёртывание_пилот.md).
 
 Поток экранов на одной странице (см. templates/operator.html):
     вход (выбор себя) → выбор участка (open_shift) → рабочий экран (сканы).
@@ -311,9 +314,83 @@ def _process_scan(core: ProductionCore, *, qr_code: str, area_id: str,
         core.storage.close()
 
 
-# Запуск для ручной проверки: python3 src/operator_app.py [db_path] [port]
+def _ensure_cert(cert_dir: Path) -> tuple[str, str] | None:
+    """
+    Гарантировать наличие самоподписанного TLS-сертификата.
+
+    Камера телефона доступна из браузера ТОЛЬКО по HTTPS (требование
+    безопасности браузеров: getUserMedia работает лишь в защищённом
+    контексте). Для пилота в локальной сети цеха достаточно самоподписанного
+    сертификата — он вызовет предупреждение браузера один раз, оператор
+    нажимает «всё равно продолжить», дальше работает.
+
+    Возвращает (cert, key) или None, если cryptography недоступна — тогда
+    сервер поднимется по HTTP (камера не заработает, но API останется живым
+    для отладки со сканером-клавиатурой).
+    """
+    cert = cert_dir / "operator_cert.pem"
+    key = cert_dir / "operator_key.pem"
+    if cert.exists() and key.exists():
+        return str(cert), str(key)
+
+    try:
+        import datetime as _dt
+        import ipaddress  # noqa: F401
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+    except ImportError:
+        return None
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, "detail-accounting-pilot"),
+    ])
+    cert_obj = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(private_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(_dt.datetime.utcnow() - _dt.timedelta(days=1))
+        .not_valid_after(_dt.datetime.utcnow() + _dt.timedelta(days=825))
+        .add_extension(x509.SubjectAlternativeName([
+            x509.DNSName("localhost"),
+        ]), critical=False)
+        .sign(private_key, hashes.SHA256())
+    )
+    cert_dir.mkdir(parents=True, exist_ok=True)
+    key.write_bytes(private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    ))
+    cert.write_bytes(cert_obj.public_bytes(serialization.Encoding.PEM))
+    return str(cert), str(key)
+
+
+# Запуск: python3 src/operator_app.py [db_path] [port] [--http]
 if __name__ == "__main__":
-    _db = sys.argv[1] if len(sys.argv) > 1 else "prod.db"
-    _port = int(sys.argv[2]) if len(sys.argv) > 2 else 5001
-    # threaded=False: одно соединение sqlite на запрос, без гонок за файл.
-    create_app(_db).run(host="0.0.0.0", port=_port, debug=False, threaded=False)
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    _db = args[0] if len(args) > 0 else "prod.db"
+    _port = int(args[1]) if len(args) > 1 else 5001
+    _force_http = "--http" in sys.argv
+
+    ssl_ctx = None
+    if not _force_http:
+        pair = _ensure_cert(Path(_db).resolve().parent / "certs")
+        if pair:
+            ssl_ctx = pair
+            print(f"HTTPS включён (камера телефона работает). "
+                  f"Открыть на телефоне: https://<IP-этого-ПК>:{_port}/")
+        else:
+            print("cryptography не установлена — запуск по HTTP, камера НЕ "
+                  "заработает. Поставьте: pip install cryptography")
+    if ssl_ctx is None:
+        print(f"HTTP-режим. http://<IP-этого-ПК>:{_port}/  (только для отладки)")
+
+    # threaded=True: телефонов несколько, запросы должны обслуживаться
+    # параллельно. Соединение sqlite открывается на каждый запрос заново.
+    create_app(_db).run(host="0.0.0.0", port=_port, debug=False,
+                        threaded=True, ssl_context=ssl_ctx)

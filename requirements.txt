@@ -9,3 +9,6 @@ Flask>=3.0,<4.0
 
 # Тесты
 pytest>=8.0,<9.0
+
+# HTTPS для доступа к камере телефона (getUserMedia требует https)
+cryptography>=42.0
