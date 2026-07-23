@@ -56,6 +56,16 @@ CREATE TABLE IF NOT EXISTS area_operations (
     PRIMARY KEY (area_id, operation_1c)
 );
 
+-- Настройки приложения: пути к источникам данных и параметры.
+-- Задаются технологом в веб-админке, не хардкодятся. Пути к .xbir, выгрузке
+-- 1С и логам станков определяются удобством станка/Базиса, а не приложением,
+-- поэтому должны настраиваться, а не быть зашитыми.
+CREATE TABLE IF NOT EXISTS settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT,
+    updated_at  TEXT
+);
+
 -- Реестр связок «заказ Базиса ↔ документ 1С».
 -- Числовой номер из .xbir может соответствовать нескольким документам 1С
 -- (разные префиксы ПС00/ЛД00/0Ч00). Связка разрешается один раз и хранится
@@ -235,6 +245,20 @@ class Storage:
             "SELECT DISTINCT area_id, area_name FROM area_operations ORDER BY area_id"
         ).fetchall()
 
+    def delete_area(self, area_id: str) -> int:
+        """Удалить участок целиком (все его операции из справочника)."""
+        cur = self._conn.execute(
+            "DELETE FROM area_operations WHERE area_id=?", (area_id,))
+        self._conn.commit()
+        return cur.rowcount
+
+    def delete_area_operation(self, area_id: str, operation_1c: str) -> None:
+        """Убрать одну операцию из участка."""
+        self._conn.execute(
+            "DELETE FROM area_operations WHERE area_id=? AND operation_1c=?",
+            (area_id, operation_1c))
+        self._conn.commit()
+
     def get_area_of_operation(self, operation_1c: str) -> Optional[str]:
         """Найти участок операции (первое совпадение)."""
         row = self._conn.execute(
@@ -242,6 +266,26 @@ class Storage:
             (operation_1c,)
         ).fetchone()
         return row["area_id"] if row else None
+
+    # --- settings (пути к источникам, параметры) ----------------------------
+
+    def set_setting(self, key: str, value: str) -> None:
+        self._conn.execute("""
+            INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value,
+                updated_at=excluded.updated_at
+        """, (key, value, datetime.now().isoformat()))
+        self._conn.commit()
+
+    def get_setting(self, key: str, default: str = "") -> str:
+        row = self._conn.execute(
+            "SELECT value FROM settings WHERE key=?", (key,)
+        ).fetchone()
+        return row["value"] if row and row["value"] is not None else default
+
+    def all_settings(self) -> dict[str, str]:
+        rows = self._conn.execute("SELECT key, value FROM settings").fetchall()
+        return {r["key"]: r["value"] for r in rows}
 
     # --- order_links (связка Базис ↔ 1С) ------------------------------------
 
@@ -333,6 +377,16 @@ class Storage:
         return self._conn.execute(
             "SELECT * FROM operators WHERE operator_id=?", (operator_id,)
         ).fetchone()
+
+    def delete_operator(self, operator_id: str) -> None:
+        """
+        Удалить оператора из справочника. Аудит сканов не страдает: в
+        scan_events operator_id хранится строкой и остаётся для истории.
+        Для ошибочных записей; штатно оператора лучше выключать (is_active).
+        """
+        self._conn.execute("DELETE FROM operators WHERE operator_id=?",
+                           (operator_id,))
+        self._conn.commit()
 
     def open_shift(self, session_id: str, operator_id: str,
                    area_id: str, started_at: str | None = None) -> None:

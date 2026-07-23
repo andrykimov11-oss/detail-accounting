@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Админ-консоль — подетальный учёт</title>
+<style>
+  :root {
+    --bg:#0e1116; --panel:#1b212b; --panel-2:#232c39; --text:#f2f5f8;
+    --muted:#9aa7b8; --accent:#2f6df6; --ok:#16a34a; --err:#dc2626; --line:#2c3543;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; min-height:100%; background:var(--bg); color:var(--text);
+    font-family:system-ui,"Segoe UI",Roboto,Arial,sans-serif; font-size:15px; }
+  .top { padding:14px 24px; background:var(--panel); border-bottom:2px solid #000;
+    font-size:19px; font-weight:700; }
+  .layout { display:flex; min-height:calc(100vh - 52px); }
+  .nav { width:220px; background:var(--panel); padding:16px 0; border-right:1px solid var(--line); }
+  .nav button { display:block; width:100%; text-align:left; border:none; background:none;
+    color:var(--muted); font-size:16px; padding:12px 24px; cursor:pointer; }
+  .nav button.active { color:var(--text); background:var(--panel-2);
+    border-left:3px solid var(--accent); }
+  .content { flex:1; padding:24px 32px; max-width:1000px; }
+  h2 { font-size:20px; margin:0 0 18px; }
+  .card { background:var(--panel); border-radius:12px; padding:20px; margin-bottom:20px; }
+  label { display:block; font-size:14px; color:var(--muted); margin:12px 0 6px; }
+  input, select { width:100%; min-height:42px; border:1px solid var(--line); border-radius:8px;
+    background:var(--panel-2); color:var(--text); font-size:15px; padding:0 12px; outline:none; }
+  button.act { min-height:42px; border:none; border-radius:8px; background:var(--accent);
+    color:#fff; font-size:15px; font-weight:600; padding:0 20px; cursor:pointer; margin-top:14px; }
+  button.sm { min-height:34px; padding:0 12px; font-size:13px; border-radius:6px;
+    border:1px solid var(--line); background:var(--panel-2); color:var(--text); cursor:pointer; }
+  button.danger { border-color:#5a2530; color:#ff9a9a; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th,td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:600; }
+  .row { display:flex; gap:12px; align-items:center; }
+  .row > * { flex:1; }
+  .msg { min-height:20px; font-size:14px; margin-top:10px; }
+  .msg.ok { color:#7ee2a8; } .msg.err { color:#ff9a9a; }
+  .muted { color:var(--muted); }
+  .pill { display:inline-block; padding:2px 8px; border-radius:6px; font-size:12px; }
+  .pill.on { background:#12331f; color:#7ee2a8; } .pill.off { background:#2b2b2b; color:#9aa7b8; }
+  #gate { max-width:360px; margin:60px auto; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<div class="top">Админ-консоль — подетальный учёт</div>
+
+<div id="gate">
+  <div class="card">
+    <h2>Вход</h2>
+    <label>PIN администратора</label>
+    <input id="pin" type="password" placeholder="PIN">
+    <button class="act" onclick="enter()">Войти</button>
+    <div id="gateMsg" class="msg err"></div>
+  </div>
+</div>
+
+<div id="app" class="layout hidden">
+  <div class="nav">
+    <button data-tab="settings" class="active" onclick="tab('settings')">Настройки путей</button>
+    <button data-tab="areas" onclick="tab('areas')">Участки</button>
+    <button data-tab="operators" onclick="tab('operators')">Операторы</button>
+    <button data-tab="reports" onclick="tab('reports')">Отчёты</button>
+  </div>
+  <div class="content">
+
+    <!-- Настройки -->
+    <div id="t-settings">
+      <h2>Настройки путей к источникам данных</h2>
+      <div class="card">
+        <div class="muted">Пути определяются удобством станка и Базиса. Приложение
+          читает файлы напрямую из этих папок.</div>
+        <label>Выгрузка 1С — производственные операции (.xlsx)</label>
+        <input id="s_one_c_plan" placeholder="\\\\server\\share\\производственные операции.xlsx">
+        <label>Выгрузка 1С — операции по участкам (.xlsx)</label>
+        <input id="s_one_c_areas" placeholder="\\\\server\\share\\Операции по участкам.xlsx">
+        <label>Выгрузка Базиса — папка с .xbir</label>
+        <input id="s_basis_xbir" placeholder="\\\\server\\share\\выгрузка Базис">
+        <label>Логи станков — папка (для будущих этапов)</label>
+        <input id="s_machine_logs" placeholder="\\\\server\\share\\логи станков">
+        <button class="act" onclick="saveSettings()">Сохранить</button>
+        <div id="setMsg" class="msg"></div>
+      </div>
+      <div class="card">
+        <h2 style="font-size:16px;">Загрузить заказы по этим путям</h2>
+        <div class="muted">Свяжет заказы Базис↔1С и импортирует связанные. То же,
+          что команда, но кнопкой.</div>
+        <button class="act" onclick="runImport()">Связать и импортировать</button>
+        <div id="impMsg" class="msg"></div>
+      </div>
+    </div>
+
+    <!-- Участки -->
+    <div id="t-areas" class="hidden">
+      <h2>Справочник участков</h2>
+      <div class="card">
+        <div class="row">
+          <div><label>ID участка</label><input id="a_id" placeholder="area_edging"></div>
+          <div><label>Название</label><input id="a_name" placeholder="Кромление"></div>
+          <div style="flex:2;"><label>Операция</label><input id="a_op" placeholder="Облицовывание кромки 19/0,8"></div>
+        </div>
+        <button class="act" onclick="addAreaOp()">Добавить операцию к участку</button>
+        <div id="areaMsg" class="msg"></div>
+      </div>
+      <div id="areasList"></div>
+    </div>
+
+    <!-- Операторы -->
+    <div id="t-operators" class="hidden">
+      <h2>Справочник операторов</h2>
+      <div class="card">
+        <div class="row">
+          <div style="flex:3;"><label>ФИО нового оператора</label><input id="o_name" placeholder="Новиков Сергей Петрович"></div>
+          <div style="align-self:flex-end;"><button class="act" style="margin:0;" onclick="addOp()">Добавить</button></div>
+        </div>
+        <div id="opMsg" class="msg"></div>
+      </div>
+      <div class="card">
+        <table><thead><tr><th>ФИО</th><th>ID</th><th>Статус</th><th></th></tr></thead>
+          <tbody id="opsBody"></tbody></table>
+      </div>
+    </div>
+
+    <!-- Отчёты -->
+    <div id="t-reports" class="hidden">
+      <h2>Отчёты</h2>
+      <div class="card">
+        <h2 style="font-size:16px;">По заказу</h2>
+        <div class="row" style="max-width:420px;">
+          <input id="r_order" placeholder="номер заказа, напр. 7709">
+          <button class="act" style="margin:0;" onclick="orderReport()">Показать</button>
+        </div>
+        <div id="orderRep"></div>
+      </div>
+      <div class="card">
+        <h2 style="font-size:16px;">По смене (все сканы)</h2>
+        <button class="act" onclick="shiftReport()">Показать сводку</button>
+        <a href="#" onclick="dlShift();return false;" style="margin-left:14px;color:var(--accent);">Выгрузить в Excel</a>
+        <div id="shiftRep"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+"use strict";
+let PIN = "";
+const $ = (id) => document.getElementById(id);
+
+async function api(path, body) {
+  const opt = { method: body ? "POST" : "GET",
+    headers: { "X-Admin-Pin": PIN, "Content-Type": "application/json" } };
+  if (body) opt.body = JSON.stringify(body);
+  const r = await fetch(path, opt);
+  return { ok: r.ok, data: await r.json().catch(() => ({})) };
+}
+
+async function enter() {
+  PIN = $("pin").value.trim();
+  const r = await api("/api/admin/settings");
+  if (!r.ok) { $("gateMsg").textContent = "Неверный PIN"; return; }
+  $("gate").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  fillSettings(r.data);
+  loadAreas(); loadOps();
+}
+
+function tab(name) {
+  ["settings","areas","operators","reports"].forEach(t => {
+    $("t-"+t).classList.toggle("hidden", t !== name);
+    document.querySelector(`.nav button[data-tab="${t}"]`).classList.toggle("active", t === name);
+  });
+}
+
+// --- Настройки ---
+function fillSettings(s) {
+  $("s_one_c_plan").value = s.one_c_plan || "";
+  $("s_one_c_areas").value = s.one_c_areas || "";
+  $("s_basis_xbir").value = s.basis_xbir || "";
+  $("s_machine_logs").value = s.machine_logs || "";
+}
+async function saveSettings() {
+  const body = {
+    one_c_plan: $("s_one_c_plan").value.trim(),
+    one_c_areas: $("s_one_c_areas").value.trim(),
+    basis_xbir: $("s_basis_xbir").value.trim(),
+    machine_logs: $("s_machine_logs").value.trim(),
+  };
+  const r = await api("/api/admin/settings", body);
+  const m = $("setMsg");
+  m.className = "msg " + (r.ok ? "ok" : "err");
+  m.textContent = r.ok ? "Сохранено" : (r.data.error || "Ошибка");
+}
+async function runImport() {
+  const m = $("impMsg"); m.className = "msg"; m.textContent = "Загрузка…";
+  const r = await api("/api/admin/run-import", {});
+  if (!r.ok) { m.className = "msg err"; m.textContent = r.data.error || "Ошибка"; return; }
+  const d = r.data;
+  m.className = "msg ok";
+  m.textContent = `Заказов найдено ${d.orders_found}, связано ${d.links_resolved}, ` +
+    `на разбор ${d.links_manual}, деталей импортировано ${d.details_imported}, ` +
+    `пропущено ${d.skipped_unlinked}`;
+}
+
+// --- Участки ---
+async function loadAreas() {
+  const r = await api("/api/admin/areas");
+  const box = $("areasList"); box.innerHTML = "";
+  (r.data || []).forEach(a => {
+    const card = document.createElement("div"); card.className = "card";
+    let ops = a.operations.map(op =>
+      `<tr><td>${op}</td><td style="width:120px;text-align:right;">` +
+      `<button class="sm danger" onclick="delAreaOp('${a.area_id}','${op.replace(/'/g,"\\'")}')">убрать</button></td></tr>`
+    ).join("");
+    card.innerHTML = `<div class="row"><div><b>${a.area_name}</b> ` +
+      `<span class="muted">${a.area_id} · ${a.operations.length} операций</span></div>` +
+      `<div style="flex:0;"><button class="sm danger" onclick="delArea('${a.area_id}')">удалить участок</button></div></div>` +
+      `<table style="margin-top:10px;"><tbody>${ops}</tbody></table>`;
+    box.appendChild(card);
+  });
+}
+async function addAreaOp() {
+  const r = await api("/api/admin/area-operation", {
+    area_id: $("a_id").value.trim(), area_name: $("a_name").value.trim(),
+    operation_1c: $("a_op").value.trim() });
+  const m = $("areaMsg");
+  m.className = "msg " + (r.ok ? "ok" : "err");
+  m.textContent = r.ok ? "Добавлено" : (r.data.error || "Ошибка");
+  if (r.ok) { $("a_op").value = ""; loadAreas(); }
+}
+async function delAreaOp(area, op) { await api("/api/admin/area-operation-delete", {area_id:area, operation_1c:op}); loadAreas(); }
+async function delArea(area) { await api("/api/admin/area-delete", {area_id:area}); loadAreas(); }
+
+// --- Операторы ---
+async function loadOps() {
+  const r = await api("/api/admin/operators");
+  const body = $("opsBody"); body.innerHTML = "";
+  (r.data || []).forEach(o => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${o.full_name}</td><td class="muted" style="font-family:monospace;">${o.operator_id}</td>` +
+      `<td><span class="pill ${o.is_active?"on":"off"}">${o.is_active?"включён":"выключен"}</span></td>` +
+      `<td style="text-align:right;white-space:nowrap;">` +
+      `<button class="sm" onclick="toggleOp('${o.operator_id}',${!o.is_active})">${o.is_active?"выключить":"включить"}</button> ` +
+      `<button class="sm danger" onclick="delOp('${o.operator_id}')">удалить</button></td>`;
+    body.appendChild(tr);
+  });
+}
+async function addOp() {
+  const r = await api("/api/admin/add-operator", { full_name: $("o_name").value.trim() });
+  const m = $("opMsg");
+  m.className = "msg " + (r.ok ? "ok" : "err");
+  m.textContent = r.ok ? `Добавлен: ${r.data.full_name} (${r.data.operator_id})` : (r.data.error || "Ошибка");
+  if (r.ok) { $("o_name").value = ""; loadOps(); }
+}
+async function toggleOp(id, active) { await api("/api/admin/set-active", {operator_id:id, is_active:active}); loadOps(); }
+async function delOp(id) { if (confirm("Удалить оператора?")) { await api("/api/admin/delete-operator", {operator_id:id}); loadOps(); } }
+
+// --- Отчёты ---
+async function orderReport() {
+  const num = $("r_order").value.trim();
+  const r = await api("/api/admin/report/order?order_num=" + encodeURIComponent(num));
+  const box = $("orderRep");
+  if (!r.ok) { box.innerHTML = `<div class="msg err">${r.data.error||"Ошибка"}</div>`; return; }
+  const d = r.data;
+  let rows = d.operations.map(o =>
+    `<tr><td>${o.operation_1c}</td><td>${o.planned}</td><td>${o.scanned}</td>` +
+    `<td>${o.pct}%</td><td>${o.status}${o.lost?` · потеряно ${o.lost}`:""}</td></tr>`).join("");
+  box.innerHTML = `<div style="margin-top:14px;" class="muted">${d.order_full_num||""} ${d.client_name||""}</div>` +
+    `<table style="margin-top:8px;"><thead><tr><th>Операция</th><th>план</th><th>факт</th><th>%</th><th>статус</th></tr></thead>` +
+    `<tbody>${rows||'<tr><td colspan=5 class="muted">по заказу ещё нет фактов</td></tr>'}</tbody></table>` +
+    `<div style="margin-top:8px;">Итого: <b>${d.scanned_total}</b> из ${d.planned_total} деталей</div>`;
+}
+async function shiftReport() {
+  const r = await api("/api/admin/report/shift");
+  const box = $("shiftRep");
+  if (!r.ok) { box.innerHTML = `<div class="msg err">${r.data.error||"Ошибка"}</div>`; return; }
+  const d = r.data;
+  const byOp = d.by_operator.map(x => `<tr><td>${x[0]}</td><td>${x[1]}</td></tr>`).join("");
+  const byOpn = d.by_operation.map(x => `<tr><td>${x[0]}</td><td>${x[1]}</td></tr>`).join("");
+  box.innerHTML = `<div style="margin-top:14px;display:flex;gap:24px;flex-wrap:wrap;">` +
+    `<div>Заказов: <b>${d.orders}</b></div><div>Сканов: <b>${d.scans_total}</b></div>` +
+    `<div>Принято: <b>${d.accepted}</b></div><div>Повторов: ${d.duplicate}</div>` +
+    `<div>Аномалий: <b style="color:${d.anomaly_pct>5?'#ff9a9a':'#7ee2a8'}">${d.anomalies} (${d.anomaly_pct}%)</b></div></div>` +
+    `<div class="row" style="align-items:flex-start;margin-top:16px;">` +
+    `<div><h2 style="font-size:14px;">По операторам</h2><table><tbody>${byOp||'<tr><td class=muted>нет</td></tr>'}</tbody></table></div>` +
+    `<div><h2 style="font-size:14px;">По операциям</h2><table><tbody>${byOpn||'<tr><td class=muted>нет</td></tr>'}</tbody></table></div></div>`;
+}
+function dlShift() {
+  // выгрузка файла: PIN нужен в заголовке, поэтому качаем через fetch → blob
+  fetch("/api/admin/report/shift.xlsx", { headers: { "X-Admin-Pin": PIN } })
+    .then(r => r.blob()).then(b => {
+      const u = URL.createObjectURL(b); const a = document.createElement("a");
+      a.href = u; a.download = "Отчёт_смены.xlsx"; a.click(); URL.revokeObjectURL(u);
+    });
+}
+</script>
+</body>
+</html>

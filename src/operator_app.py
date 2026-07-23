@@ -21,6 +21,7 @@ docs/Развёртывание_пилот.md).
 """
 from __future__ import annotations
 
+import os
 import sys
 import uuid
 from datetime import datetime
@@ -51,6 +52,8 @@ def create_app(db_path: str | Path = "prod.db") -> Flask:
     """
     app = Flask(__name__)
     app.config["DB_PATH"] = str(db_path)
+    # PIN админки: из окружения DA_ADMIN_PIN, иначе "0000". Сменить в бою.
+    app.config["ADMIN_PIN"] = os.environ.get("DA_ADMIN_PIN", "0000")
 
     def _core() -> ProductionCore:
         """Свежий ProductionCore на текущий запрос (своё соединение sqlite)."""
@@ -61,6 +64,300 @@ def create_app(db_path: str | Path = "prod.db") -> Flask:
     @app.get("/")
     def index():
         return render_template("operator.html")
+
+    # --- Админка: управление операторами ------------------------------------
+    #
+    # Простая веб-страница технолога: список операторов, добавление нового,
+    # включение/выключение. Защита — PIN (config ADMIN_PIN, по умолчанию
+    # "0000"): в изолированной сети цеха этого достаточно, полноценная
+    # авторизация — на промышленный этап.
+
+    def _check_pin() -> bool:
+        want = str(current_app.config.get("ADMIN_PIN", "0000"))
+        got = request.headers.get("X-Admin-Pin", "")
+        return got == want
+
+    @app.get("/admin")
+    def admin_page():
+        return render_template("admin.html")
+
+    @app.get("/api/admin/operators")
+    def api_admin_operators():
+        """Все операторы (включая выключенных) — для страницы админки."""
+        if not _check_pin():
+            return jsonify({"error": "неверный PIN"}), 403
+        core = _core()
+        try:
+            return jsonify([
+                {"operator_id": o["operator_id"], "full_name": o["full_name"],
+                 "is_active": bool(o["is_active"])}
+                for o in core.storage.get_operators(active_only=False)
+            ])
+        finally:
+            core.storage.close()
+
+    @app.post("/api/admin/add-operator")
+    def api_admin_add_operator():
+        """Завести нового оператора по ФИО. ID генерируется автоматически."""
+        if not _check_pin():
+            return jsonify({"error": "неверный PIN"}), 403
+        from import_operators import make_operator_id  # noqa: PLC0415
+
+        data = request.get_json(force=True, silent=True) or {}
+        name = (data.get("full_name") or "").strip()
+        if len(name) < 3:
+            return jsonify({"error": "введите ФИО"}), 400
+        core = _core()
+        try:
+            taken = {o["operator_id"]
+                     for o in core.storage.get_operators(active_only=False)}
+            operator_id = make_operator_id(name, taken)
+            core.storage.upsert_operator(operator_id, name, is_active=True)
+            return jsonify({"operator_id": operator_id, "full_name": name})
+        finally:
+            core.storage.close()
+
+    @app.post("/api/admin/set-active")
+    def api_admin_set_active():
+        """Включить/выключить оператора (не удаляем — сохраняем историю)."""
+        if not _check_pin():
+            return jsonify({"error": "неверный PIN"}), 403
+        data = request.get_json(force=True, silent=True) or {}
+        operator_id = data.get("operator_id", "")
+        active = bool(data.get("is_active", True))
+        core = _core()
+        try:
+            op = core.storage.get_operator(operator_id)
+            if op is None:
+                return jsonify({"error": "оператор не найден"}), 404
+            core.storage.upsert_operator(operator_id, op["full_name"], is_active=active)
+            return jsonify({"operator_id": operator_id, "is_active": active})
+        finally:
+            core.storage.close()
+
+    @app.post("/api/admin/delete-operator")
+    def api_admin_delete_operator():
+        """Удалить оператора (для ошибочных записей; штатно — выключение)."""
+        if not _check_pin():
+            return jsonify({"error": "неверный PIN"}), 403
+        data = request.get_json(force=True, silent=True) or {}
+        core = _core()
+        try:
+            core.storage.delete_operator(data.get("operator_id", ""))
+            return jsonify({"ok": True})
+        finally:
+            core.storage.close()
+
+    # --- Админка: настройки путей -------------------------------------------
+
+    @app.get("/api/admin/settings")
+    def api_admin_settings():
+        """Все настройки (пути к 1С, Базису, логам станков)."""
+        if not _check_pin():
+            return jsonify({"error": "неверный PIN"}), 403
+        core = _core()
+        try:
+            return jsonify(core.storage.all_settings())
+        finally:
+            core.storage.close()
+
+    @app.post("/api/admin/settings")
+    def api_admin_set_settings():
+        """Сохранить настройки (словарь ключ→значение)."""
+        if not _check_pin():
+            return jsonify({"error": "неверный PIN"}), 403
+        data = request.get_json(force=True, silent=True) or {}
+        core = _core()
+        try:
+            for key, value in data.items():
+                core.storage.set_setting(str(key), str(value))
+            return jsonify(core.storage.all_settings())
+        finally:
+            core.storage.close()
+
+    # --- Админка: справочник участков ---------------------------------------
+
+    @app.get("/api/admin/areas")
+    def api_admin_areas():
+        if not _check_pin():
+            return jsonify({"error": "неверный PIN"}), 403
+        core = _core()
+        try:
+            out = []
+            for row in core.storage.get_all_areas():
+                ops = core.storage.get_operations_by_area(row["area_id"])
+                out.append({"area_id": row["area_id"],
+                            "area_name": row["area_name"], "operations": ops})
+            return jsonify(out)
+        finally:
+            core.storage.close()
+
+    @app.post("/api/admin/area-operation")
+    def api_admin_area_op():
+        """Добавить операцию к участку (создаёт участок, если нового id)."""
+        if not _check_pin():
+            return jsonify({"error": "неверный PIN"}), 403
+        data = request.get_json(force=True, silent=True) or {}
+        area_id = (data.get("area_id") or "").strip()
+        area_name = (data.get("area_name") or "").strip()
+        operation = (data.get("operation_1c") or "").strip()
+        if not (area_id and area_name and operation):
+            return jsonify({"error": "нужны area_id, area_name, operation_1c"}), 400
+        core = _core()
+        try:
+            core.storage.upsert_area_operation(area_id, area_name, operation)
+            return jsonify({"ok": True})
+        finally:
+            core.storage.close()
+
+    @app.post("/api/admin/area-operation-delete")
+    def api_admin_area_op_delete():
+        if not _check_pin():
+            return jsonify({"error": "неверный PIN"}), 403
+        data = request.get_json(force=True, silent=True) or {}
+        core = _core()
+        try:
+            core.storage.delete_area_operation(
+                data.get("area_id", ""), data.get("operation_1c", ""))
+            return jsonify({"ok": True})
+        finally:
+            core.storage.close()
+
+    @app.post("/api/admin/area-delete")
+    def api_admin_area_delete():
+        if not _check_pin():
+            return jsonify({"error": "неверный PIN"}), 403
+        data = request.get_json(force=True, silent=True) or {}
+        core = _core()
+        try:
+            removed = core.storage.delete_area(data.get("area_id", ""))
+            return jsonify({"removed": removed})
+        finally:
+            core.storage.close()
+
+    # --- Админка: отчёты -----------------------------------------------------
+
+    @app.get("/api/admin/report/order")
+    def api_admin_report_order():
+        if not _check_pin():
+            return jsonify({"error": "неверный PIN"}), 403
+        from reports import order_report  # noqa: PLC0415
+
+        try:
+            order_num = int(request.args.get("order_num", "0"))
+        except ValueError:
+            return jsonify({"error": "order_num должен быть числом"}), 400
+        core = _core()
+        try:
+            rep = order_report(core, order_num)
+            return jsonify({
+                "order_num": rep.order_num,
+                "order_full_num": rep.order_full_num,
+                "client_name": rep.client_name,
+                "planned_total": rep.planned_total,
+                "scanned_total": rep.scanned_total,
+                "operations": [
+                    {"operation_1c": o.operation_1c, "planned": o.planned,
+                     "scanned": o.scanned, "pct": o.pct, "status": o.status,
+                     "lost": o.lost}
+                    for o in rep.operations
+                ],
+            })
+        finally:
+            core.storage.close()
+
+    @app.get("/api/admin/report/shift")
+    def api_admin_report_shift():
+        if not _check_pin():
+            return jsonify({"error": "неверный PIN"}), 403
+        from reports import shift_report  # noqa: PLC0415
+
+        core = _core()
+        try:
+            rep = shift_report(core)
+            return jsonify({
+                "orders": len(rep.orders),
+                "scans_total": rep.scans_total,
+                "accepted": rep.accepted,
+                "duplicate": rep.duplicate,
+                "overplan": rep.overplan,
+                "errors": rep.errors,
+                "anomalies": rep.anomalies,
+                "anomaly_pct": rep.anomaly_pct,
+                "by_operator": rep.by_operator.most_common(),
+                "by_operation": rep.by_operation.most_common(),
+            })
+        finally:
+            core.storage.close()
+
+    @app.get("/api/admin/report/shift.xlsx")
+    def api_admin_report_shift_xlsx():
+        """Выгрузка сводки смены в xlsx — для журнала пилота."""
+        if not _check_pin():
+            return jsonify({"error": "неверный PIN"}), 403
+        import tempfile  # noqa: PLC0415
+        from flask import send_file  # noqa: PLC0415
+        from reports import export_shift_xlsx, shift_report  # noqa: PLC0415
+
+        core = _core()
+        try:
+            rep = shift_report(core)
+            out = Path(tempfile.gettempdir()) / "shift_report.xlsx"
+            export_shift_xlsx(rep, out)
+            return send_file(out, as_attachment=True,
+                             download_name="Отчёт_смены.xlsx")
+        finally:
+            core.storage.close()
+
+    @app.post("/api/admin/run-import")
+    def api_admin_run_import():
+        """
+        Запустить связку + импорт заказов по путям из настроек.
+
+        Читает настройки basis_xbir (папка/файл .xbir) и one_c_plan (выгрузка
+        1С), разрешает связки и импортирует связанные заказы. Кнопка в
+        админке вместо ручной команды в терминале.
+        """
+        if not _check_pin():
+            return jsonify({"error": "неверный PIN"}), 403
+        from one_c_loader import load_production_plan  # noqa: PLC0415
+        from xbir_parser import parse_xbir  # noqa: PLC0415
+
+        core = _core()
+        try:
+            settings = core.storage.all_settings()
+            basis = settings.get("basis_xbir", "").strip()
+            plan = settings.get("one_c_plan", "").strip()
+            if not basis or not plan:
+                return jsonify({"error": "задайте пути basis_xbir и one_c_plan "
+                                "в настройках"}), 400
+
+            basis_path = Path(basis)
+            files = (sorted(basis_path.rglob("*.xbir")) +
+                     sorted(basis_path.rglob("*.XBIR"))) \
+                if basis_path.is_dir() else [basis_path]
+
+            one_c, _ = load_production_plan(Path(plan))
+            xbir_orders: dict[int, str] = {}
+            for f in files:
+                if not f.is_file():
+                    continue
+                for d in parse_xbir(f)[0]:
+                    if d.order_num is not None:
+                        xbir_orders.setdefault(d.order_num, d.order_raw.strip())
+
+            links = core.resolve_links(xbir_orders, one_c)
+            resolved = sum(1 for r in links if r.is_resolved)
+            res = core.import_xbir(files, require_link=True)
+            return jsonify({
+                "orders_found": len(xbir_orders),
+                "links_resolved": resolved,
+                "links_manual": len(xbir_orders) - resolved,
+                "details_imported": res.details_imported,
+                "skipped_unlinked": len(res.skipped_unlinked),
+            })
+        finally:
+            core.storage.close()
 
     # --- Справочники --------------------------------------------------------
 

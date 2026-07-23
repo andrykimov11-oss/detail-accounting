@@ -37,6 +37,27 @@ def _core(db: str) -> ProductionCore:
     return ProductionCore(Storage(db))
 
 
+def _expand_xbir(paths: list[str]) -> list[Path]:
+    """
+    Развернуть аргументы в список .xbir.
+
+    Аргумент может быть файлом или ПАПКОЙ — папка обходится рекурсивно
+    (.xbir/.XBIR). Это позволяет указать общую сетевую папку, куда Базис
+    складывает раскрои, и читать её напрямую — без переноса файлов
+    сторонними программами.
+    """
+    out: list[Path] = []
+    for raw in paths:
+        p = Path(raw)
+        if p.is_dir():
+            out.extend(sorted(p.rglob("*.xbir")) + sorted(p.rglob("*.XBIR")))
+        elif p.is_file():
+            out.append(p)
+        else:
+            print(f"  ✗ не найден: {p}", file=sys.stderr)
+    return out
+
+
 def cmd_init(args) -> int:
     core = _core(args.db)
     n = core.seed_areas()
@@ -50,13 +71,10 @@ def cmd_init(args) -> int:
 
 def cmd_import(args) -> int:
     core = _core(args.db)
-    paths = [Path(p) for p in args.files]
-    missing = [p for p in paths if not p.is_file()]
-    for p in missing:
-        print(f"  ✗ не найден: {p}", file=sys.stderr)
-    paths = [p for p in paths if p.is_file()]
+    paths = _expand_xbir(args.files)
     if not paths:
-        print("Нет файлов для импорта", file=sys.stderr)
+        print("Нет файлов для импорта (укажите .xbir или папку с ними)",
+              file=sys.stderr)
         return 1
 
     res = core.import_xbir(paths, require_link=args.require_link)
@@ -171,11 +189,7 @@ def cmd_link(args) -> int:
     print(f"    префиксы: {load_rep.prefixes}")
 
     xbir_orders: dict[int, str] = {}
-    for f in args.files:
-        path = Path(f)
-        if not path.is_file():
-            print(f"  ✗ не найден: {path}", file=sys.stderr)
-            continue
+    for path in _expand_xbir(args.files):
         details, _ = parse_xbir(path)
         for d in details:
             if d.order_num is not None:
