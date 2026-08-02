@@ -117,15 +117,22 @@ def calc_operation_status(plan: OperationPlan,
         if op == plan.operation_1c and uid not in planned_uids and scanned > 0:
             extra_uids.append(uid)
 
-    # Определение статуса
-    if scanned_total == 0 and overplan_total == 0:
+    # Определение статуса.
+    #
+    # OVERPLAN проверяется ДО COMPLETED (DET-REVIEW-001, C-03). Иначе
+    # превышение плана маскируется: scanned_total считается как Σ min(факт,
+    # план), поэтому «scanned_total >= planned_total» истинно и при
+    # overplan_total > 0, и ветка COMPLETED перехватывала бы сигнал —
+    # операция уходила в 1С «Выполнено», хотя деталей обработано больше
+    # плановых. Теперь превышение видно в статусе и не уходит как закрытая.
+    if overplan_total > 0:
+        status = OpStatus.OVERPLAN
+    elif scanned_total == 0:
         status = OpStatus.NOT_STARTED
     elif scanned_total >= planned_total and not lost_uids:
         status = OpStatus.COMPLETED
-    elif scanned_total < planned_total:
-        status = OpStatus.IN_PROGRESS
     else:
-        status = OpStatus.OVERPLAN
+        status = OpStatus.IN_PROGRESS
 
     return OperationStatus(
         order_num=ctx.order_num,

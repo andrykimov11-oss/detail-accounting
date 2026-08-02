@@ -87,6 +87,20 @@ def build_order_plan(details: list[Detail],
     plans: list[OperationPlan] = []
     warnings: list[str] = []
 
+    # Дедупликация по совпадающему составу деталей (DET-REVIEW-001, C-04).
+    #
+    # Две операции могут отбирать ОДИН И ТОТ ЖЕ набор деталей: «Облицовывание
+    # кромки 19/2» и «35/2» используют один предикат _has_edge(2.0) — толщина
+    # ДСП из названия не различает детали (35 мм в .xbir не бывает). Если обе
+    # заберут полный состав, план по кромке 2 мм задвоится, а 35/2 будет
+    # нечем закрыть: операция никогда не получит COMPLETED.
+    #
+    # Поэтому детали засчитываются один раз — первой операции с этим набором.
+    # Ключ — множество detail_uid. Операции с РАЗНЫМ набором (19/0,4 и 19/2)
+    # обе остаются подетальными: деталь с двумя кромками законно проходит две
+    # операции.
+    claimed: dict[frozenset, str] = {}
+
     for op_name in operations_1c:
         rule: OperationRule | None = find_rule(op_name)
         if rule is None:
@@ -114,8 +128,24 @@ def build_order_plan(details: list[Detail],
             ))
             continue
 
-        # Считаем плановые объёмы
         uids = sorted({d.detail_uid for d in subset})
+        key = frozenset(uids)
+
+        # Тот же набор деталей уже посчитан другой операцией заказа
+        owner = claimed.get(key)
+        if owner is not None and owner != op_name:
+            plans.append(OperationPlan(
+                operation_1c=op_name,
+                stage=rule.stage,
+                counted_as=rule.counted_as,
+                is_per_detail=False,
+                note=f"те же детали, что у «{owner}» — учтены там, "
+                     f"чтобы план не задвоился",
+            ))
+            continue
+        claimed[key] = op_name
+
+        # Считаем плановые объёмы
         plans.append(OperationPlan(
             operation_1c=op_name,
             stage=rule.stage,

@@ -112,26 +112,23 @@ def test_overplan_does_not_inflate_fact(details, ctx, t0):
     assert s.status is OpStatus.COMPLETED
 
 
-def test_overplan_status_is_unreachable(details, ctx):
+def test_overplan_status_reachable_and_blocks_closing(details, ctx):
     """
-    ДЕФЕКТ (найден тестом). Ветка OpStatus.OVERPLAN недостижима.
+    C-03 ИСПРАВЛЕНО (DET-REVIEW-001). Превышение плана видно в статусе и
+    НЕ уходит в 1С как «Выполнено».
 
-    scanned_total считается как Σ min(факт, план), поэтому
-    «scanned_total >= planned_total» выполняется тогда и только тогда,
-    когда lost_uids пуст. Условие COMPLETED срабатывает раньше и
-    перехватывает все случаи, на которые рассчитан OVERPLAN.
-
-    Следствие: превышение плана видно только в поле overplan_total,
-    но статус операции показывает «Выполнено» — и она уходит в 1С
-    как закрытая, хотя деталей обработано больше плановых.
+    Раньше scanned_total через Σ min(факт, план) давал COMPLETED раньше
+    OVERPLAN, и превышение маскировалось. Теперь overplan проверяется
+    первым: статус OVERPLAN, is_closing=False — операция не закрывается
+    автоматически, технолог видит аномалию.
     """
     ctx.scanned[(EDGE_08, UID_SHELF_16)] = 5       # план 3
 
     s = calc_operation_status(plan_for(details, EDGE_08), ctx)
 
     assert s.overplan_total == 2                   # превышение зафиксировано
-    assert s.status is OpStatus.COMPLETED          # но статус этого не отражает
-    assert s.is_closing is True                    # и операция уйдёт в 1С
+    assert s.status is OpStatus.OVERPLAN           # и статус его отражает
+    assert s.is_closing is False                   # в 1С как «Выполнено» НЕ уйдёт
 
 
 def test_extra_uids_detected(details, ctx):

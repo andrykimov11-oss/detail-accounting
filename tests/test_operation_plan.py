@@ -100,25 +100,29 @@ def test_unknown_operation_produces_warning(details):
     assert "НЕТ ПРАВИЛА" in plans[0].note
 
 
-def test_edging_35_and_19_share_predicate_and_double_count(details):
+def test_edging_35_and_19_deduped_no_double_count(details):
     """
-    ДЕФЕКТ (найден тестом). Правила «Облицовывание кромки 19/2» и
-    «Облицовывание кромки 35/2» используют один предикат _has_edge(2.0)
-    и различаются только именем. Толщина ДСП (19 vs 35) в предикате
-    не учитывается.
+    C-04 ИСПРАВЛЕНО (DET-REVIEW-001). Правила «Облицовывание кромки 19/2»
+    и «Облицовывание кромки 35/2» используют один предикат _has_edge(2.0)
+    и отбирают ОДИН И ТОТ ЖЕ набор деталей (35 мм в .xbir не бывает).
 
-    Следствие: если в заказе обе операции, одна и та же деталь попадёт
-    в плановый состав обеих — план по кромке 2мм задвоится, а закрыть
-    операцию 35/2 будет нечем (её деталей физически нет).
+    Раньше обе забирали полный состав — план по кромке 2 мм задваивался,
+    а 35/2 было нечем закрыть. Теперь детали засчитываются один раз:
+    первая операция владеет планом, вторая помечается позаказной.
     """
     plans, _ = build_order_plan(details, [EDGE_2, "Облицовывание кромки 35/2"])
     plan_19, plan_35 = plans
 
-    assert plan_19.detail_uids == plan_35.detail_uids == [UID_PANEL_16]
-    assert plan_19.planned_qty == plan_35.planned_qty == 2
+    # 19/2 (первая) владеет планом
+    assert plan_19.is_per_detail is True
+    assert plan_19.planned_qty == 2
+    # 35/2 — тот же набор, деталей не берёт (план не задваивается)
+    assert plan_35.is_per_detail is False
+    assert plan_35.planned_qty == 0
+    assert "учтены там" in plan_35.note
 
-    # Итог по участку кромления 2мм задваивается
-    assert plan_19.planned_qty + plan_35.planned_qty == 4   # физически деталей 2
+    # Итог по участку кромления 2 мм НЕ задваивается
+    assert plan_19.planned_qty + plan_35.planned_qty == 2   # физически деталей 2
 
 
 def test_operation_without_matching_details_marked_not_per_detail(details):
