@@ -632,14 +632,42 @@ def _ensure_cert(cert_dir: Path) -> tuple[str, str] | None:
 
     try:
         import datetime as _dt
-        import ipaddress  # noqa: F401
+        import ipaddress
+        import socket
         from cryptography import x509
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import rsa
-        from cryptography.x509.oid import NameOID
+        from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
     except ImportError:
         return None
 
+    # Собираем все IPv4 машины. iOS/Safari требует, чтобы адрес, по которому
+    # заходит телефон (напр. 192.168.1.86), был вписан в SubjectAlternativeName.
+    # Без этого браузер блокирует наглухо, даже без кнопки «перейти».
+    ips: set[str] = {"127.0.0.1"}
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            addr = info[4][0]
+            if ":" not in addr:
+                ips.add(addr)
+    except OSError:
+        pass
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ips.add(s.getsockname()[0])
+        s.close()
+    except OSError:
+        pass
+
+    san = [x509.DNSName("localhost")]
+    for ip in sorted(ips):
+        try:
+            san.append(x509.IPAddress(ipaddress.ip_address(ip)))
+        except ValueError:
+            continue
+
+    now = _dt.datetime.now(_dt.timezone.utc)
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = issuer = x509.Name([
         x509.NameAttribute(NameOID.COMMON_NAME, "detail-accounting-pilot"),
@@ -650,11 +678,15 @@ def _ensure_cert(cert_dir: Path) -> tuple[str, str] | None:
         .issuer_name(issuer)
         .public_key(private_key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(_dt.datetime.utcnow() - _dt.timedelta(days=1))
-        .not_valid_after(_dt.datetime.utcnow() + _dt.timedelta(days=825))
-        .add_extension(x509.SubjectAlternativeName([
-            x509.DNSName("localhost"),
-        ]), critical=False)
+        .not_valid_before(now - _dt.timedelta(days=1))
+        # iOS доверяет TLS-сертификатам сроком не больше 825 дней — берём 397.
+        .not_valid_after(now + _dt.timedelta(days=397))
+        .add_extension(x509.SubjectAlternativeName(san), critical=False)
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None),
+                       critical=True)
+        .add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False)
         .sign(private_key, hashes.SHA256())
     )
     cert_dir.mkdir(parents=True, exist_ok=True)
