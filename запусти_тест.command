@@ -37,6 +37,23 @@ echo "   Операторы в базе:"
 python main.py --db prod.db operators
 
 echo ""
+echo "[3a] Библиотека сканера (кладём на сервер, телефону интернет не нужен)..."
+if [ ! -s src/static/html5-qrcode.min.js ]; then
+  mkdir -p src/static
+  curl -fsSL -o src/static/html5-qrcode.min.js \
+    https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js \
+  || curl -fsSL -o src/static/html5-qrcode.min.js \
+    https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js
+  if [ -s src/static/html5-qrcode.min.js ]; then
+    echo "   готово: $(wc -c < src/static/html5-qrcode.min.js) байт"
+  else
+    echo "   !! не скачалось — проверь интернет на Маке"
+  fi
+else
+  echo "   уже на месте"
+fi
+
+echo ""
 echo "[4/4] Определяю адрес в сети..."
 IP=$(ipconfig getifaddr en0 2>/dev/null)
 [ -z "$IP" ] && IP=$(ipconfig getifaddr en1 2>/dev/null)

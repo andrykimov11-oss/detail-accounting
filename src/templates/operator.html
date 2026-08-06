@@ -70,7 +70,7 @@
     aspect-ratio: 4/3; overflow: hidden;
   }
   #reader { width: 100%; height: 100%; }
-  #reader video { width: 100% !important; height: 100% !important; object-fit: cover; }
+  #reader video { width: 100% !important; height: 100% !important; object-fit: contain; }
   .cam-hint {
     position: absolute; left: 0; right: 0; bottom: 0;
     text-align: center; font-size: 15px; color: #cdd6e2;
@@ -157,6 +157,7 @@
     <div id="reader"></div>
     <div id="camOff" class="cam-off">Наведите камеру на QR-код бирки</div>
     <div class="cam-hint">Держите QR в кадре — скан произойдёт сам</div>
+    <div id="dbg" style="position:absolute;left:0;right:0;top:0;background:rgba(0,0,0,.55);color:#7CFC00;font-size:13px;padding:4px 8px;font-family:monospace;">диагностика…</div>
   </div>
 
   <div id="feedback" class="feedback">
@@ -285,21 +286,59 @@ function setFeedbackIdle() {
 }
 
 // --- Камера ----------------------------------------------------------------
+let qrTries = 0;
 function startCamera() {
   if (typeof Html5Qrcode === "undefined") {
-    // библиотека ещё не загрузилась — подождём и повторим
+    // библиотека ещё не загрузилась — подождём и повторим, но не бесконечно
+    if (++qrTries > 15) {
+      $("camOff").innerHTML =
+        "Библиотека сканера не загрузилась.<br>" +
+        "Нужен файл src/static/html5-qrcode.min.js на сервере<br>" +
+        "или доступ в интернет у телефона.";
+      return;
+    }
     setTimeout(startCamera, 400);
+    return;
+  }
+  // Небезопасный контекст (сертификат не доверенный / http) — камеры нет вовсе.
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    $("camOff").innerHTML =
+      "Камера заблокирована: соединение не доверенное.<br>" +
+      "Установите сертификат на телефон и включите доверие:<br>" +
+      "Настройки → Основные → Об этом устройстве →<br>" +
+      "Настройки доверия сертификатам.";
     return;
   }
   if (scanner) return;
   scanner = new Html5Qrcode("reader", { verbose: false });
-  const config = { fps: 10, qrbox: { width: 220, height: 220 } };
-  scanner.start({ facingMode: "environment" }, config, onDecoded, () => {})
-    .then(() => { $("camOff").style.display = "none"; })
+  // Без qrbox сканируется ВЕСЬ кадр: то, что видно, то и анализируется.
+  // videoConstraints с ideal 1280×720 — иначе iOS отдаёт 480×640, на котором
+  // модулей QR в кадре не хватает и декодер его не находит.
+  const config = {
+    fps: 15,
+    // Центральный квадрат 70% кадра: QR в нём крупнее для декодера, фон
+    // отсекается. object-fit:contain, поэтому рамка совпадает с картинкой.
+    qrbox: (w, h) => { const s = Math.floor(Math.min(w, h) * 0.7); return { width: s, height: s }; },
+    videoConstraints: {
+      facingMode: "environment",
+      width: { ideal: 1280 }, height: { ideal: 720 },
+    },
+  };
+  scanner.start({ facingMode: "environment" }, config, onDecoded, onScanErr)
+    .then(() => {
+      $("camOff").style.display = "none";
+      setTimeout(() => {
+        const v = document.querySelector("#reader video");
+        const r = v ? (v.videoWidth + "×" + v.videoHeight) : "нет video";
+        dbg("видео " + r + " · кадров 0");
+      }, 1200);
+    })
     .catch(err => {
+      const name = (err && err.name) ? err.name : "ошибка";
       $("camOff").innerHTML =
-        "Камера недоступна.<br>Проверьте разрешение камеры в браузере,<br>" +
-        "адрес должен быть https://<br><br>" +
+        "Камера недоступна (" + name + ").<br>" +
+        "Разрешите доступ к камере в браузере;<br>" +
+        "адрес должен быть https:// и сертификат доверенный.<br><br>" +
         "Пока используйте кнопку «Бирка не читается».";
     });
 }
@@ -309,9 +348,22 @@ function stopCamera() {
   }
 }
 
+// --- Диагностика сканера (временная) --------------------------------------
+let scanFrames = 0, lastVideoRes = "";
+function dbg(t) { const d = $("dbg"); if (d) d.textContent = t; }
+function onScanErr() {
+  scanFrames++;
+  if (scanFrames % 10 === 0) {
+    const v = document.querySelector("#reader video");
+    if (v && v.videoWidth) lastVideoRes = v.videoWidth + "×" + v.videoHeight;
+    dbg("сканирую " + lastVideoRes + " · кадров " + scanFrames);
+  }
+}
+
 // Камера декодирует QR много раз в секунду. Защита от повторов:
 // один и тот же код в течение 2,5с игнорируем; пока идёт запрос — тоже.
 function onDecoded(code) {
+  dbg("СЧИТАН: " + code);
   const now = Date.now();
   if (busy) return;
   if (code === lastCode && (now - lastAt) < 2500) return;
