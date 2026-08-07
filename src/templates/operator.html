@@ -175,16 +175,12 @@
   </div>
 </section>
 
-<script src="/static/html5-qrcode.min.js" onerror="loadQrFallback()"></script>
+<script src="/static/html5-qrcode.min.js"></script>
 <script>
 "use strict";
 
-// html5-qrcode: сначала локальный файл (офлайн-цех), при отсутствии — CDN.
-function loadQrFallback() {
-  var s = document.createElement("script");
-  s.src = "https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js";
-  document.head.appendChild(s);
-}
+// Библиотека сканера поставляется В ПРОДУКТЕ (src/static/html5-qrcode.min.js),
+// интернет цеху не нужен. Если файла нет — startCamera покажет об этом явно.
 
 const state = {
   operator: null, area: null, operations: [], operation: null, orderNum: null,
@@ -293,8 +289,8 @@ function startCamera() {
     if (++qrTries > 15) {
       $("camOff").innerHTML =
         "Библиотека сканера не загрузилась.<br>" +
-        "Нужен файл src/static/html5-qrcode.min.js на сервере<br>" +
-        "или доступ в интернет у телефона.";
+        "Проверьте, что файл src/static/html5-qrcode.min.js<br>" +
+        "есть на сервере (он поставляется в составе продукта).";
       return;
     }
     setTimeout(startCamera, 400);
@@ -316,9 +312,8 @@ function startCamera() {
   // модулей QR в кадре не хватает и декодер его не находит.
   const config = {
     fps: 15,
-    // Центральный квадрат 70% кадра: QR в нём крупнее для декодера, фон
-    // отсекается. object-fit:contain, поэтому рамка совпадает с картинкой.
-    qrbox: (w, h) => { const s = Math.floor(Math.min(w, h) * 0.7); return { width: s, height: s }; },
+    // Без qrbox декодер анализирует ВЕСЬ кадр — не зависит от того, как
+    // видео отображается (object-fit), поэтому нет рассинхрона «рамка/кадр».
     videoConstraints: {
       facingMode: "environment",
       width: { ideal: 1280 }, height: { ideal: 720 },
