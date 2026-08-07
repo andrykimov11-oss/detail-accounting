@@ -157,7 +157,6 @@
     <div id="reader"></div>
     <div id="camOff" class="cam-off">Наведите камеру на QR-код бирки</div>
     <div class="cam-hint">Держите QR в кадре — скан произойдёт сам</div>
-    <div id="dbg" style="position:absolute;left:0;right:0;top:0;background:rgba(0,0,0,.55);color:#7CFC00;font-size:13px;padding:4px 8px;font-family:monospace;">диагностика…</div>
   </div>
 
   <div id="feedback" class="feedback">
@@ -307,27 +306,24 @@ function startCamera() {
   }
   if (scanner) return;
   scanner = new Html5Qrcode("reader", { verbose: false });
-  // Без qrbox сканируется ВЕСЬ кадр: то, что видно, то и анализируется.
-  // videoConstraints с ideal 1280×720 — иначе iOS отдаёт 480×640, на котором
-  // модулей QR в кадре не хватает и декодер его не находит.
   const config = {
     fps: 15,
     // Без qrbox декодер анализирует ВЕСЬ кадр — не зависит от того, как
     // видео отображается (object-fit), поэтому нет рассинхрона «рамка/кадр».
+    // Просим максимум разрешения: бирочный QR всего 20×20 мм, на 1080p на нём
+    // приходится заметно больше пикселей, чем на 720p — читается увереннее.
     videoConstraints: {
       facingMode: "environment",
-      width: { ideal: 1280 }, height: { ideal: 720 },
+      width: { ideal: 1920 }, height: { ideal: 1080 },
     },
+    // Использовать СИСТЕМНЫЙ детектор штрихкодов (BarcodeDetector) там, где он
+    // есть — на Android Chrome это тот же движок, что в приложениях-сканерах:
+    // мелкую бирку 20×20 мм берёт мгновенно, JS-декодер намного слабее.
+    // На iOS детектора нет — html5-qrcode сам откатится на JS-декодер.
+    experimentalFeatures: { useBarCodeDetectorIfSupported: true },
   };
-  scanner.start({ facingMode: "environment" }, config, onDecoded, onScanErr)
-    .then(() => {
-      $("camOff").style.display = "none";
-      setTimeout(() => {
-        const v = document.querySelector("#reader video");
-        const r = v ? (v.videoWidth + "×" + v.videoHeight) : "нет video";
-        dbg("видео " + r + " · кадров 0");
-      }, 1200);
-    })
+  scanner.start({ facingMode: "environment" }, config, onDecoded, () => {})
+    .then(() => { $("camOff").style.display = "none"; })
     .catch(err => {
       const name = (err && err.name) ? err.name : "ошибка";
       $("camOff").innerHTML =
@@ -343,22 +339,9 @@ function stopCamera() {
   }
 }
 
-// --- Диагностика сканера (временная) --------------------------------------
-let scanFrames = 0, lastVideoRes = "";
-function dbg(t) { const d = $("dbg"); if (d) d.textContent = t; }
-function onScanErr() {
-  scanFrames++;
-  if (scanFrames % 10 === 0) {
-    const v = document.querySelector("#reader video");
-    if (v && v.videoWidth) lastVideoRes = v.videoWidth + "×" + v.videoHeight;
-    dbg("сканирую " + lastVideoRes + " · кадров " + scanFrames);
-  }
-}
-
 // Камера декодирует QR много раз в секунду. Защита от повторов:
 // один и тот же код в течение 2,5с игнорируем; пока идёт запрос — тоже.
 function onDecoded(code) {
-  dbg("СЧИТАН: " + code);
   const now = Date.now();
   if (busy) return;
   if (code === lastCode && (now - lastAt) < 2500) return;
