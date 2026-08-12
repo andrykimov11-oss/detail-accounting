@@ -149,16 +149,29 @@ def calc_operation_status(plan: OperationPlan,
     )
 
 
-def to_1c_payload(s: OperationStatus) -> dict:
+def to_1c_payload(s: OperationStatus, *, order_full_num: str = "",
+                  order_date: str = "", operator: str = "") -> dict:
     """
-    Сформировать payload для HTTP-запроса в 1С (см. архитектуру, решение 4).
+    Сформировать payload для записи статуса операции в 1С.
+
+    Ключ операции в 1С — тройка «полный номер заказа + дата заказа + операция
+    цеха» (проверено на массиве: уникальна, 0 коллизий на 102 877 строках).
+    operation_id в выгрузке 1С отсутствует, поэтому используется эта тройка.
+
+    - order_full_num — документ 1С с префиксом и нулями ('ЛД00-006564');
+    - order_date     — дата заказа 1С (ISO), вторая часть ключа;
+    - operator       — исполнитель (поле «Исполнитель» в 1С).
+
     Только когда операция готова к закрытию — остальное не отправляется.
     """
     return {
+        "order_full_num": order_full_num,
+        "order_date": order_date,
         "order_num": s.order_num,
         "operation": s.operation_1c,
         "status": "Выполнено" if s.is_closing else None,
         "completed_at": s.updated_at.isoformat() if s.is_closing else None,
+        "operator": operator,
         "scanned_details": s.scanned_total,
         "planned_details": s.planned_total,
     }

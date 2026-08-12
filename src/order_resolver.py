@@ -88,6 +88,7 @@ class LinkResult:
     order_raw: str = ""                        # исходная строка «7936 Коновалов»
     status: LinkStatus = LinkStatus.NOT_FOUND
     order_full_num: str = ""                   # 'ПС00-007936' — если разрешено
+    order_date: str = ""                        # дата заказа 1С (ISO) — часть ключа
     client_name: str = ""                      # клиент из 1С
     xbir_client: str = ""                      # клиент, извлечённый из .xbir
     candidates: list[str] = field(default_factory=list)
@@ -248,6 +249,7 @@ def resolve_order_link(
         only = candidates[0]
         result.status = LinkStatus.UNIQUE
         result.order_full_num = only.order_full_num
+        result.order_date = only.order_date.isoformat() if only.order_date else ""
         result.client_name = only.client_name
         result.reason = "единственный кандидат в 1С"
         return result
@@ -289,6 +291,7 @@ def resolve_order_link(
         result.status = (LinkStatus.RESOLVED_BY_CLIENT if matched
                          else LinkStatus.RESOLVED_BY_WINDOW)
         result.order_full_num = best.order_full_num
+        result.order_date = best.order_date.isoformat() if best.order_date else ""
         result.client_name = best.client_name
         result.reason += (
             f"по сроку исполнения подходит один заказ ({best.order_full_num})"
@@ -300,6 +303,7 @@ def resolve_order_link(
         best = matched[0]
         result.status = LinkStatus.RESOLVED_BY_CLIENT
         result.order_full_num = best.order_full_num
+        result.order_date = best.order_date.isoformat() if best.order_date else ""
         result.client_name = best.client_name
         result.reason += (
             f"клиент «{xbir_client}» однозначно совпал с «{best.client_name}»"

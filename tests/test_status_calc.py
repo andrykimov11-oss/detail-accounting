@@ -167,6 +167,24 @@ def test_payload_empty_while_in_progress(details, ctx, t0):
     assert payload["completed_at"] is None
 
 
+def test_payload_carries_1c_key_triple_and_operator(details, ctx, t0):
+    """
+    Ключ операции для 1С — тройка «полный номер + дата заказа + операция»
+    (operation_id в выгрузке 1С нет). Плюс исполнитель для поля «Исполнитель».
+    """
+    scan_n(ctx, UID_SHELF_16, EDGE_08, t0, 3)
+    s = calc_operation_status(plan_for(details, EDGE_08), ctx)
+    payload = to_1c_payload(s, order_full_num="ЛД00-006564",
+                            order_date="2026-06-09",
+                            operator="Ивашкин Николай Алексеевич")
+    assert payload["order_full_num"] == "ЛД00-006564"
+    assert payload["order_date"] == "2026-06-09"
+    assert payload["operation"] == EDGE_08
+    assert payload["operator"] == "Ивашкин Николай Алексеевич"
+    assert payload["status"] == "Выполнено"
+    assert "operation_id" not in payload
+
+
 # --- Отчёт -------------------------------------------------------------------
 
 def test_status_report_renders(details, ctx, t0):

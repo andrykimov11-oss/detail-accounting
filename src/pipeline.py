@@ -142,6 +142,7 @@ class ProductionCore:
                 order_num=r.order_num,
                 status=r.status.value,
                 order_full_num=r.order_full_num,
+                order_date=r.order_date,
                 client_name=r.client_name,
                 xbir_client=r.xbir_client,
                 reason=r.reason,
@@ -329,12 +330,26 @@ class ProductionCore:
 
     def closing_payloads(self, ctx: OrderContext, operations_1c: list[str],
                          rules: dict | None = None) -> list[dict]:
-        """Payload'ы для 1С по операциям, готовым к закрытию."""
-        return [
-            to_1c_payload(s)
-            for s in self.order_status(ctx, operations_1c, rules=rules)
-            if s.is_closing
-        ]
+        """
+        Payload'ы для 1С по операциям, готовым к закрытию.
+
+        Ключ операции — «полный номер заказа + дата заказа + операция» (берём
+        из реестра связок order_links), плюс исполнитель последнего скана.
+        """
+        link = self.storage.get_order_link(ctx.order_num)
+        full_num = (link["order_full_num"] if link else "") or ""
+        order_date = (link["order_date"] if link else "") or ""
+
+        payloads = []
+        for s in self.order_status(ctx, operations_1c, rules=rules):
+            if not s.is_closing:
+                continue
+            operator = self.storage.get_operation_operator(ctx.order_num,
+                                                            s.operation_1c)
+            payloads.append(to_1c_payload(
+                s, order_full_num=full_num, order_date=order_date,
+                operator=operator))
+        return payloads
 
     def push_status_to_1c(self, ctx: OrderContext, operations_1c: list[str],
                           transport=None, rules: dict | None = None) -> tuple[int, int]:

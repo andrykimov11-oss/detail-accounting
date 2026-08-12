@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE TABLE IF NOT EXISTS order_links (
     order_num      INTEGER PRIMARY KEY,      -- 7936 — число из .xbir
     order_full_num TEXT,                     -- 'ПС00-007936' — документ 1С
+    order_date     TEXT,                     -- дата заказа 1С (ISO) — часть ключа для записи статуса
     client_name    TEXT,                     -- клиент по данным 1С
     xbir_client    TEXT,                     -- клиент, извлечённый из .xbir
     status         TEXT NOT NULL,            -- unique/client/manual/not_found
@@ -171,7 +172,15 @@ class Storage:
         self._conn = sqlite3.connect(self.db_path)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA_SQL)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self):
+        """Досоздать колонки в существующих БД (ALTER ... ADD COLUMN идемпотентно)."""
+        cols = {r["name"] for r in
+                self._conn.execute("PRAGMA table_info(order_links)").fetchall()}
+        if "order_date" not in cols:
+            self._conn.execute("ALTER TABLE order_links ADD COLUMN order_date TEXT")
 
     def close(self):
         if self._conn:
@@ -293,14 +302,16 @@ class Storage:
                           order_full_num: str = "", client_name: str = "",
                           xbir_client: str = "", reason: str = "",
                           candidates: list[str] | None = None,
-                          confirmed_by: str = "") -> None:
+                          confirmed_by: str = "", order_date: str = "") -> None:
         """Записать результат разрешения связки заказа."""
         self._conn.execute("""
-            INSERT INTO order_links (order_num, order_full_num, client_name,
-                xbir_client, status, reason, candidates, confirmed_by, resolved_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO order_links (order_num, order_full_num, order_date,
+                client_name, xbir_client, status, reason, candidates,
+                confirmed_by, resolved_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(order_num) DO UPDATE SET
                 order_full_num=excluded.order_full_num,
+                order_date=excluded.order_date,
                 client_name=excluded.client_name,
                 xbir_client=excluded.xbir_client,
                 status=excluded.status,
@@ -308,8 +319,8 @@ class Storage:
                 candidates=excluded.candidates,
                 confirmed_by=excluded.confirmed_by,
                 resolved_at=excluded.resolved_at
-        """, (order_num, order_full_num, client_name, xbir_client, status,
-              reason, ";".join(candidates or []), confirmed_by,
+        """, (order_num, order_full_num, order_date, client_name, xbir_client,
+              status, reason, ";".join(candidates or []), confirmed_by,
               datetime.now().isoformat()))
         self._conn.commit()
 
@@ -352,6 +363,24 @@ class Storage:
         return bool(row) and row["status"] in (
             "unique", "window", "client", "manual_confirmed"
         ) and bool(row["order_full_num"])
+
+    def get_operation_operator(self, order_num: int, operation_1c: str) -> str:
+        """
+        Исполнитель операции для записи в 1С (поле «Исполнитель»): оператор
+        последнего засчитанного скана этой операции по заказу. ФИО из
+        справочника, если оператор в нём есть, иначе — его id.
+        """
+        row = self._conn.execute("""
+            SELECT COALESCE(o.full_name, se.operator_id) AS who
+              FROM scan_events se
+              JOIN details d ON d.detail_uid = se.detail_uid
+         LEFT JOIN operators o ON o.operator_id = se.operator_id
+             WHERE d.order_num = ? AND se.operation_1c = ?
+                   AND se.status = 'accepted'
+          ORDER BY se.scanned_at DESC
+             LIMIT 1
+        """, (order_num, operation_1c)).fetchone()
+        return (row["who"] if row and row["who"] else "")
 
     # --- operators / смены ---------------------------------------------------
 
