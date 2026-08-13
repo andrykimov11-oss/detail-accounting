@@ -1,0 +1,24 @@
+# systemd-служба приложения подетального учёта.
+# Установка:
+#   sudo cp deploy/psr.service /etc/systemd/system/psr.service
+#   (отредактировать пути, User, DA_ADMIN_PIN, DA_FTP_PASS)
+#   sudo systemctl daemon-reload && sudo systemctl enable --now psr
+#   journalctl -u psr -f   # логи
+
+[Unit]
+Description=PSR detail-accounting (подетальный учёт)
+After=network.target
+
+[Service]
+Type=simple
+User=psr
+WorkingDirectory=/opt/psr
+# Секреты — только в окружении, не в коде и не в веб-настройках:
+Environment=DA_ADMIN_PIN=CHANGE_ME
+Environment=DA_FTP_PASS=CHANGE_ME
+ExecStart=/opt/psr/.venv/bin/python src/operator_app.py prod.db 5001 --http
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

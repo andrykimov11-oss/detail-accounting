@@ -91,6 +91,24 @@
         <button class="act" onclick="runImport()">Связать и импортировать</button>
         <div id="impMsg" class="msg"></div>
       </div>
+
+      <div class="card">
+        <h2 style="font-size:16px;">Выгрузка 1С с FTP</h2>
+        <div class="muted">Забрать «производственные операции» с FTP (rascroi.ru).
+          Пароль задаётся на сервере (DA_FTP_PASS), здесь не хранится.
+          Если FTP на этом же сервере — проще указать путь к папке выше.</div>
+        <label>FTP-хост</label>
+        <input id="s_ftp_host" placeholder="rascroi.ru">
+        <label>Пользователь</label>
+        <input id="s_ftp_user" placeholder="psr">
+        <label>Папка на FTP</label>
+        <input id="s_ftp_dir" placeholder="/1c">
+        <label>Файлы (через запятую)</label>
+        <input id="s_ftp_files" placeholder="производственные операции New_1 (XLSX).xlsx">
+        <button class="act" onclick="saveSettings()">Сохранить</button>
+        <button class="act" onclick="pullFtp()">Забрать выгрузку 1С с FTP</button>
+        <div id="ftpMsg" class="msg"></div>
+      </div>
     </div>
 
     <!-- Участки -->
@@ -182,6 +200,10 @@ function fillSettings(s) {
   $("s_one_c_areas").value = s.one_c_areas || "";
   $("s_basis_xbir").value = s.basis_xbir || "";
   $("s_machine_logs").value = s.machine_logs || "";
+  $("s_ftp_host").value = s.ftp_host || "";
+  $("s_ftp_user").value = s.ftp_user || "";
+  $("s_ftp_dir").value = s.ftp_dir || "";
+  $("s_ftp_files").value = s.ftp_files || "";
 }
 async function saveSettings() {
   const body = {
@@ -189,6 +211,10 @@ async function saveSettings() {
     one_c_areas: $("s_one_c_areas").value.trim(),
     basis_xbir: $("s_basis_xbir").value.trim(),
     machine_logs: $("s_machine_logs").value.trim(),
+    ftp_host: $("s_ftp_host").value.trim(),
+    ftp_user: $("s_ftp_user").value.trim(),
+    ftp_dir: $("s_ftp_dir").value.trim(),
+    ftp_files: $("s_ftp_files").value.trim(),
   };
   const r = await api("/api/admin/settings", body);
   const m = $("setMsg");
@@ -204,6 +230,14 @@ async function runImport() {
   m.textContent = `Заказов найдено ${d.orders_found}, связано ${d.links_resolved}, ` +
     `на разбор ${d.links_manual}, деталей импортировано ${d.details_imported}, ` +
     `пропущено ${d.skipped_unlinked}`;
+}
+async function pullFtp() {
+  const m = $("ftpMsg"); m.className = "msg"; m.textContent = "Забираю с FTP…";
+  const r = await api("/api/admin/pull-1c-ftp", {});
+  if (!r.ok) { m.className = "msg err"; m.textContent = r.data.error || "Ошибка"; return; }
+  m.className = "msg ok";
+  m.textContent = "Скачано: " + (r.data.downloaded || []).join(", ") +
+    ". Путь one_c_plan обновлён — жми «Связать и импортировать».";
 }
 
 // --- Участки ---

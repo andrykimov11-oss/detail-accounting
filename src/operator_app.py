@@ -359,6 +359,50 @@ def create_app(db_path: str | Path = "prod.db") -> Flask:
         finally:
             core.storage.close()
 
+    @app.post("/api/admin/pull-1c-ftp")
+    def api_admin_pull_ftp():
+        """
+        Забрать выгрузку 1С с FTP (rascroi.ru) в папку incoming рядом с БД и
+        прописать путь в настройку one_c_plan, чтобы «Связать и импортировать»
+        подхватило файл. Пароль — из окружения DA_FTP_PASS, не из веб-настроек.
+        """
+        if not _check_pin():
+            return jsonify({"error": "неверный PIN"}), 403
+        from fetch_sources import FtpConfig, fetch_files  # noqa: PLC0415
+
+        core = _core()
+        try:
+            s = core.storage.all_settings()
+            host = (s.get("ftp_host") or "").strip()
+            files = [f.strip() for f in (s.get("ftp_files") or "").split(",")
+                     if f.strip()]
+            if not host:
+                return jsonify({"error": "задайте ftp_host в настройках"}), 400
+            if not files:
+                return jsonify({"error": "задайте ftp_files (имена через запятую)"}), 400
+
+            cfg = FtpConfig(
+                host=host,
+                user=(s.get("ftp_user") or "anonymous"),
+                password=os.environ.get("DA_FTP_PASS", ""),
+                directory=(s.get("ftp_dir") or "").strip(),
+                filenames=files,
+                secure=(s.get("ftp_secure", "1") != "0"),
+            )
+            incoming = Path(current_app.config["DB_PATH"]).resolve().parent / "incoming"
+            saved = fetch_files(cfg, incoming)
+
+            # первый файл считаем «производственные операции» → путь для импорта
+            if saved:
+                core.storage.set_setting("one_c_plan", str(saved[0]))
+            return jsonify({"downloaded": [p.name for p in saved],
+                            "dir": str(incoming),
+                            "one_c_plan": str(saved[0]) if saved else ""})
+        except Exception as e:  # noqa: BLE001 — вернуть причину технологу
+            return jsonify({"error": f"FTP: {e}"}), 502
+        finally:
+            core.storage.close()
+
     # --- Справочники --------------------------------------------------------
 
     @app.get("/api/operators")
