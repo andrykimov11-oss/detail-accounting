@@ -39,14 +39,49 @@ bash deploy/seed_test.sh
 ```
 Должно напечатать `Операторов: 1`.
 
-## Права (чтобы дальше без вас)
+## Права для последующих итераций (разово, под root)
 
-- Разрешить `psrtest` перезапуск службы без пароля — в sudoers:
-  ```
-  psrtest ALL=(root) NOPASSWD: /bin/systemctl restart psr
-  ```
-- Убедиться, что в службе заданы `DA_ADMIN_PIN` и `DA_FTP_PASS` (уже сделано).
-- `prod.db` — не перезаписывать при будущих обновлениях (в нём весь факт).
+Правок будет много (цикл «разработчик пушит в GitHub → заказчик обновляет
+стенд»). Чтобы заказчик обновлял сам, без вас, дайте `psrtest`
+**минимально необходимый** набор — не общий root.
+
+**1. Папка приложения — git-репозиторий, владелец `psrtest`.**
+```bash
+# развернуть через git (если ещё копия файлов), сохранив prod.db:
+sudo -u psrtest git clone <URL репозитория detail-accounting> /opt/psr
+sudo chown -R psrtest:psrtest /opt/psr
+# перенести существующую prod.db, если была, и создать venv под psrtest
+```
+
+**2. Перезапуск ТОЛЬКО своей службы без пароля** (не общий sudo).
+Создать файл `/etc/sudoers.d/psrtest` (через `visudo -f`):
+```
+psrtest ALL=(root) NOPASSWD: /bin/systemctl restart psr, /bin/systemctl status psr
+```
+Разрешает трогать только службу `psr`, больше ничего.
+
+**3. SSH-доступ для `psrtest` по ключу** (без паролей):
+```bash
+sudo mkdir -p ~psrtest/.ssh && sudo tee -a ~psrtest/.ssh/authorized_keys < ключ_заказчика.pub
+sudo chown -R psrtest:psrtest ~psrtest/.ssh && sudo chmod 700 ~psrtest/.ssh
+sudo chmod 600 ~psrtest/.ssh/authorized_keys
+```
+
+**4. Чтение папки FTP-пользователя `ftp_1c`** (чтобы приложение видело выгрузки):
+```bash
+sudo usermod -aG ftp_1c psrtest
+sudo chmod -R g+rX ~ftp_1c/     # или ACL: setfacl -R -m u:psrtest:rX ~ftp_1c/
+```
+
+**Чего НЕ давать:** полный `sudo`/root — для нашего цикла не нужен, риск большой.
+**Секреты** (`DA_ADMIN_PIN`, `DA_FTP_PASS`) — только в окружении службы, не в репозитории.
+**`prod.db`** — не перезаписывать при обновлениях (в нём весь факт).
+
+После этого весь цикл обновления у заказчика — две команды:
+```bash
+ssh psrtest@rascroi.ru
+bash deploy/update.sh      # git pull + зависимости + тесты + restart
+```
 
 ## Доставка данных (FTP на этом же VPS)
 
