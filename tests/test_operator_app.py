@@ -113,6 +113,17 @@ def test_shift_opens_and_lists_operations(client):
     assert op == EDGE_08
 
 
+def test_scan_accepts_raw_guid_from_bilka(client):
+    """
+    Бирка Базиса несёт в QR сам GUID детали (напр. EEFD3BD1-...-...), а не
+    MD5(GUID)[:10]. Приложение приводит GUID к каноническому qr и засчитывает.
+    """
+    op = _login_and_shift(client)
+    res = _scan(client, UID_SHELF_16.upper(), op)   # сырой GUID, как на бирке
+    assert res["status"] == "accepted"
+    assert res["order_num"] == 6564
+
+
 def test_scan_accepted_and_counter_grows(client, monkeypatch):
     # Гасим окно антидубликата, чтобы проверить рост счётчика по одной детали.
     monkeypatch.setattr(operator_app, "_active_orders", {})

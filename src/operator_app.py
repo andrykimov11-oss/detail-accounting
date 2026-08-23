@@ -22,6 +22,7 @@ docs/Развёртывание_пилот.md).
 from __future__ import annotations
 
 import os
+import re
 import sys
 import uuid
 from datetime import datetime
@@ -34,6 +35,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 from pipeline import ProductionCore, qr_of  # noqa: E402
 from scan_processor import FactStatus, ScanEvent, suggest_details  # noqa: E402
 from storage import Storage  # noqa: E402
+
+# GUID детали (как в .xbir/на бирке Базиса): 8-4-4-4-12 hex.
+_GUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 
 # «Активный заказ смены» на оператора. Живёт в памяти процесса: это оперативное
@@ -601,6 +608,15 @@ def _process_scan(core: ProductionCore, *, qr_code: str, area_id: str,
         отсканировать деталь известного заказа (заказ определить не по чему).
     """
     try:
+        # Бирка Базиса может нести в QR сам GUID детали, а не MD5(GUID)[:10].
+        # Приводим к каноническому qr_code, дальше всё работает как обычно.
+        code = (qr_code or "").strip()
+        if _GUID_RE.match(code):
+            row = core.storage.get_detail_by_uid(code)
+            if row is not None:
+                code = row["qr_code"]
+        qr_code = code
+
         active = _active_orders.get(operator_id)
         detail_row = core.storage.get_detail_by_qr(qr_code)
 

@@ -224,6 +224,15 @@ class Storage:
             "SELECT * FROM details WHERE qr_code=?", (qr_code,)
         ).fetchone()
 
+    def get_detail_by_uid(self, detail_uid: str) -> Optional[sqlite3.Row]:
+        """
+        Найти деталь по GUID (detail_uid), регистронезависимо. Нужно, когда
+        бирка Базиса несёт в QR сам GUID детали, а не MD5(GUID)[:10].
+        """
+        return self._conn.execute(
+            "SELECT * FROM details WHERE UPPER(detail_uid)=UPPER(?)", (detail_uid,)
+        ).fetchone()
+
     def count_details(self) -> int:
         return self._conn.execute("SELECT COUNT(*) FROM details").fetchone()[0]
 
