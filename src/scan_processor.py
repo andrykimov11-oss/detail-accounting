@@ -123,7 +123,8 @@ class OrderContext:
 # --- Обработка одного события -----------------------------------------------
 
 def process_scan(event: ScanEvent, ctx: OrderContext,
-                 area_ops: list[str] | None = None) -> FactResult:
+                 area_ops: list[str] | None = None,
+                 count: int = 1, check_duplicate: bool = True) -> FactResult:
     """
     Обработать событие сканера. Возвращает результат (засчитан/ошибка).
     Мутирует ctx: обновляет счётчики факта.
@@ -132,7 +133,13 @@ def process_scan(event: ScanEvent, ctx: OrderContext,
       участок → операции участка → выбранная операция
       → проверка QR → проверка применимости операции к детали
       → счётчик деталей по GUID → факт.
+
+    count           — сколько экземпляров занести за раз (скан пачкой: оператор
+                      пикнул одну бирку стопки и ввёл количество). По умолчанию 1.
+    check_duplicate — проверять окно дублей (для одиночного скана камерой). При
+                      явном вводе количества (пачка) — False, это осознанное действие.
     """
+    count = max(1, int(count))
     # 1. Участок → список операций.
     # Приоритет — справочник из БД (area_ops), переданный вызывающим кодом.
     # Fallback на константу AREAS — только для автономных запусков/тестов.
@@ -149,10 +156,11 @@ def process_scan(event: ScanEvent, ctx: OrderContext,
             message=f"операция '{event.operation_1c}' не входит в операции участка '{event.area_id}'",
         )
 
-    # 2. Дубликат в окне 5 сек (Принцип 4)
+    # 2. Дубликат в окне 5 сек (Принцип 4). Для явного ввода количества
+    # (скан пачкой) окно не проверяем — это осознанное действие оператора.
     dup_key = (event.qr_code, event.operation_1c)
     last = ctx.last_scan_time.get(dup_key)
-    if last and (event.scanned_at - last) < timedelta(seconds=DUPLICATE_WINDOW_SEC):
+    if check_duplicate and last and (event.scanned_at - last) < timedelta(seconds=DUPLICATE_WINDOW_SEC):
         return FactResult(
             status=FactStatus.DUPLICATE,
             message=f"повторный скан в течение {DUPLICATE_WINDOW_SEC}с — отброшен",
@@ -200,7 +208,7 @@ def process_scan(event: ScanEvent, ctx: OrderContext,
 
     fact_key = (event.operation_1c, detail.detail_uid)
     current = ctx.scanned.get(fact_key, 0)
-    new_count = current + 1
+    new_count = current + count
 
     # 7. Превышение плана
     if new_count > planned_qty:

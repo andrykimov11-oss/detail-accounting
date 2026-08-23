@@ -124,6 +124,29 @@ def test_scan_accepts_raw_guid_from_bilka(client):
     assert res["order_num"] == 6564
 
 
+def _scan_qty(client, qr_code, count, operation):
+    return client.post("/api/scan-qty", json={
+        "qr_code": qr_code, "count": count, "area_id": AREA,
+        "operator_id": OP_ID, "operation_1c": operation,
+    }).get_json()
+
+
+def test_scan_qty_records_batch(client):
+    """Скан пачкой: одна бирка + количество → заносится N за раз (полка qty=3)."""
+    _login_and_shift(client, EDGE_08)
+    res = _scan_qty(client, UID_SHELF_16, 3, EDGE_08)
+    assert res["status"] == "accepted"
+    assert res["scanned_count"] == 3
+    assert res["planned_qty"] == 3
+
+
+def test_scan_qty_overplan_when_exceeds(client):
+    """Ввод больше плана → превышение (не засчитывается), сигнал технологу."""
+    _login_and_shift(client, EDGE_08)
+    res = _scan_qty(client, UID_SHELF_16, 5, EDGE_08)   # план 3
+    assert res["status"] == "overplan"
+
+
 def test_scan_accepted_and_counter_grows(client, monkeypatch):
     # Гасим окно антидубликата, чтобы проверить рост счётчика по одной детали.
     monkeypatch.setattr(operator_app, "_active_orders", {})

@@ -498,6 +498,28 @@ def create_app(db_path: str | Path = "prod.db") -> Flask:
             operation_1c=data.get("operation_1c", ""),
         )
 
+    @app.post("/api/scan-qty")
+    def api_scan_qty():
+        """
+        Скан пачкой: оператор пикнул одну бирку стопки одинаковых деталей и
+        ввёл количество. Тело: {qr_code, count, area_id, operator_id, operation_1c}.
+        Заносит сразу count экземпляров, окно дублей не проверяется.
+        """
+        data = request.get_json(force=True, silent=True) or {}
+        try:
+            count = int(data.get("count", 1))
+        except (TypeError, ValueError):
+            count = 1
+        return _process_scan(
+            _core(),
+            qr_code=str(data.get("qr_code", "")).strip(),
+            area_id=data.get("area_id", ""),
+            operator_id=data.get("operator_id", ""),
+            operation_1c=data.get("operation_1c", ""),
+            count=max(1, count),
+            check_duplicate=False,
+        )
+
     @app.post("/api/pick-detail")
     def api_pick_detail():
         """
@@ -596,7 +618,8 @@ def _detail_view(core: ProductionCore, qr_code: str) -> dict | None:
 
 
 def _process_scan(core: ProductionCore, *, qr_code: str, area_id: str,
-                  operator_id: str, operation_1c: str):
+                  operator_id: str, operation_1c: str,
+                  count: int = 1, check_duplicate: bool = True):
     """
     Общее тело обработки скана и «выбора детали пальцем».
 
@@ -644,7 +667,8 @@ def _process_scan(core: ProductionCore, *, qr_code: str, area_id: str,
             operation_1c=operation_1c,
             scanned_at=datetime.now(),
         )
-        result = core.handle_scan(event, ctx)
+        result = core.handle_scan(event, ctx, count=count,
+                                  check_duplicate=check_duplicate)
 
         # Первый принятый скан фиксирует заказ смены.
         if result.status == FactStatus.ACCEPTED and active is None:

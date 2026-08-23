@@ -97,6 +97,20 @@
   .feedback.ok .msg,.feedback.dup .msg,.feedback.over .msg,.feedback.err .msg { color: inherit; opacity: .85; }
   .idle { color: var(--muted); font-size: 30px; font-weight: 700; }
 
+  /* Скан пачкой: поле количества внутри блока «Принято» */
+  .qtybox { margin-top: 16px; padding-top: 14px; border-top: 2px solid rgba(0,0,0,.18); }
+  .qlabel { font-size: 16px; margin-bottom: 10px; }
+  .qrow { display: flex; gap: 10px; }
+  #qtyInput {
+    flex: 1; min-width: 0; height: 60px; border: none; border-radius: 12px;
+    text-align: center; font-size: 30px; font-weight: 800; padding: 0 10px;
+  }
+  .qbtn {
+    flex: 1; height: 60px; border: none; border-radius: 12px;
+    background: #04240f; color: #eafff0; font-size: 18px; font-weight: 700;
+  }
+  .qbtn:active { opacity: .85; }
+
   .picks { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
   .pick {
     border: none; border-radius: 12px; text-align: left; cursor: pointer;
@@ -188,6 +202,7 @@ const $ = (id) => document.getElementById(id);
 
 let scanner = null;         // экземпляр Html5Qrcode
 let lastCode = "";          // защита от повторного срабатывания одной бирки
+let lastQr = "";            // последний код (для «скана пачкой» — занести N)
 let lastAt = 0;
 let busy = false;           // пока идёт запрос — новые сканы игнорируем
 
@@ -351,6 +366,7 @@ function onDecoded(code) {
 
 async function sendScan(qr) {
   if (!state.operation) { flashError("Выберите операцию"); return; }
+  lastQr = qr;                 // запоминаем код для «скана пачкой»
   busy = true;
   try {
     const res = await api("/api/scan", {
@@ -365,7 +381,23 @@ async function sendScan(qr) {
   }
 }
 
+// Скан пачкой: занести введённое количество одинаковых деталей за раз.
+async function addQty() {
+  const inp = $("qtyInput");
+  if (!inp || !lastQr) return;
+  const n = parseInt(inp.value, 10);
+  if (!n || n < 1) { flashError("Введите количество"); return; }
+  const res = await api("/api/scan-qty", {
+    qr_code: lastQr, count: n,
+    area_id: state.area.area_id,
+    operator_id: state.operator.operator_id,
+    operation_1c: state.operation,
+  });
+  handleResult(res);
+}
+
 async function pickDetail(detail_uid) {
+  lastQr = detail_uid;         // GUID детали — бэкенд нормализует для «пачки»
   const res = await api("/api/pick-detail", {
     detail_uid, area_id: state.area.area_id,
     operator_id: state.operator.operator_id, operation_1c: state.operation,
@@ -411,9 +443,19 @@ function handleResult(res) {
 
   if (res.status === "accepted") {
     fb.className = "feedback ok";
+    const remain = (res.planned_qty || 0) - (res.scanned_count || 0);
+    let qtyBlock = "";
+    if (remain > 0 && lastQr) {
+      // Скан пачкой: пикнул одну бирку стопки → ввёл, сколько ещё таких же.
+      qtyBlock =
+        `<div class="qtybox"><div class="qlabel">В пачке ещё одинаковых? Осталось по плану: ${remain}</div>` +
+        `<div class="qrow"><input id="qtyInput" type="number" inputmode="numeric" min="1" max="${remain}" value="${remain}">` +
+        `<button class="qbtn" onclick="addQty()">Занести пачкой</button></div></div>`;
+    }
     fb.innerHTML = `<div class="big">✓ Принято</div>` +
       (detLine ? `<div class="det">${detLine}</div>` : "") +
-      `<div class="count">Отсканировано ${res.scanned_count} из ${res.planned_qty}</div>`;
+      `<div class="count">Отсканировано ${res.scanned_count} из ${res.planned_qty}</div>` +
+      qtyBlock;
     beep();
   } else if (res.status === "duplicate") {
     fb.className = "feedback dup";

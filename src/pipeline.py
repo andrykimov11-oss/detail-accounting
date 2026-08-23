@@ -278,16 +278,21 @@ class ProductionCore:
 
     # --- Обработка скана с сохранением --------------------------------------
 
-    def handle_scan(self, event: ScanEvent, ctx: OrderContext) -> FactResult:
+    def handle_scan(self, event: ScanEvent, ctx: OrderContext,
+                    count: int = 1, check_duplicate: bool = True) -> FactResult:
         """
         Обработать событие сканера и сохранить результат.
 
         Пишется ВСЁ: и принятые факты, и ошибки/дубликаты — scan_events это
         audit log (спецификация, Принцип 6: «все ошибки пишутся в лог,
         не теряются»). В facts попадает только принятый факт.
+
+        count — сколько экземпляров занести (скан пачкой). check_duplicate=False
+        при явном вводе количества — окно дублей не мешает.
         """
         area_ops = self.area_operations(event.area_id)
-        result = process_scan(event, ctx, area_ops=area_ops)
+        result = process_scan(event, ctx, area_ops=area_ops,
+                              count=count, check_duplicate=check_duplicate)
 
         self.storage.log_scan_event({
             "scan_id": event.scan_id,
