@@ -984,18 +984,36 @@ if __name__ == "__main__":
     _port = int(args[1]) if len(args) > 1 else 5001
     _force_http = "--http" in sys.argv
 
+    def _lan_ip() -> str:
+        import socket as _s
+        try:
+            s = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except OSError:
+            return "<IP-этого-ПК>"
+
     ssl_ctx = None
     if not _force_http:
         pair = _ensure_cert(Path(_db).resolve().parent / "certs")
         if pair:
             ssl_ctx = pair
-            print(f"HTTPS включён (камера телефона работает). "
-                  f"Открыть на телефоне: https://<IP-этого-ПК>:{_port}/")
         else:
             print("cryptography не установлена — запуск по HTTP, камера НЕ "
                   "заработает. Поставьте: pip install cryptography")
-    if ssl_ctx is None:
-        print(f"HTTP-режим. http://<IP-этого-ПК>:{_port}/  (только для отладки)")
+
+    _ip = _lan_ip()
+    _scheme = "https" if ssl_ctx else "http"
+    print("=" * 54)
+    print("  Адреса (та же Wi-Fi, Android + Chrome):")
+    print(f"    {_scheme}://{_ip}:{_port}/         — рабочее место оператора")
+    print(f"    {_scheme}://{_ip}:{_port}/packing  — дашборд упаковки")
+    print(f"    {_scheme}://{_ip}:{_port}/admin    — админка")
+    if ssl_ctx:
+        print("  Сертификат самоподписанный — принять предупреждение в браузере.")
+    print("=" * 54)
 
     # threaded=True: телефонов несколько, запросы должны обслуживаться
     # параллельно. Соединение sqlite открывается на каждый запрос заново.
