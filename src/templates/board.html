@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Монитор заказов — подетальный учёт</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#1b212b; --panel2:#232c39; --text:#f2f5f8; --muted:#9aa7b8;
+    --ok:#16a34a; --prog:#2f6df6; --over:#e8710a; --idle:#3a4453;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:system-ui,"Segoe UI",Roboto,Arial,sans-serif;}
+  .top{display:flex;align-items:center;gap:14px;padding:14px 20px;
+    background:var(--panel);border-bottom:2px solid #000;position:sticky;top:0;z-index:5;}
+  .top h1{font-size:20px;margin:0;font-weight:600;}
+  .top .sub{color:var(--muted);font-size:14px;}
+  .top .spacer{flex:1;}
+  .top .upd{color:var(--muted);font-size:13px;}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));
+    gap:16px;padding:18px;}
+  .card{background:var(--panel);border-radius:14px;padding:16px;border:1px solid #000;}
+  .chead{display:flex;align-items:baseline;gap:10px;margin-bottom:4px;}
+  .num{font-size:20px;font-weight:700;}
+  .client{color:var(--muted);font-size:14px;}
+  .obar{height:14px;border-radius:7px;background:#0c0f14;overflow:hidden;margin:10px 0 4px;}
+  .ofill{height:100%;background:var(--prog);}
+  .ometa{display:flex;justify-content:space-between;color:var(--muted);font-size:13px;margin-bottom:10px;}
+  .ops{display:flex;flex-direction:column;gap:9px;}
+  .op{}
+  .oprow{display:flex;justify-content:space-between;font-size:14px;margin-bottom:3px;}
+  .oprow .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px;}
+  .oprow .v{color:var(--muted);white-space:nowrap;}
+  .bar{height:10px;border-radius:5px;background:#0c0f14;overflow:hidden;}
+  .fill{height:100%;}
+  .s-completed .fill,.s-completed.ofill{background:var(--ok);}
+  .s-in_progress .fill{background:var(--prog);}
+  .s-overplan .fill{background:var(--over);}
+  .s-not_started .fill{background:var(--idle);}
+  .badge{font-size:12px;padding:2px 8px;border-radius:10px;margin-left:auto;}
+  .b-done{background:#04240f;color:#7ef0a6;}
+  .empty{padding:60px 20px;text-align:center;color:var(--muted);font-size:18px;}
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>Монитор заказов</h1>
+  <span class="sub">подетальный учёт · степень закрытия</span>
+  <span class="spacer"></span>
+  <span class="upd" id="upd">обновление…</span>
+</div>
+<div id="grid" class="grid"></div>
+<div id="empty" class="empty" style="display:none;">Нет импортированных заказов. Загрузите .xbir и свяжите в админке.</div>
+
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+function esc(s){return String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+
+async function load(){
+  let data;
+  try{ data=await (await fetch("/api/board")).json(); }
+  catch(e){ $("upd").textContent="нет связи с сервером"; return; }
+  const orders=data.orders||[];
+  const grid=$("grid");
+  $("empty").style.display=orders.length?"none":"block";
+  grid.innerHTML="";
+  orders.forEach(o=>{
+    const card=document.createElement("div"); card.className="card";
+    const doneClass=o.order_pct>=100?"s-completed":"";
+    let ops="";
+    o.operations.forEach(op=>{
+      const pct=Math.min(100,op.pct||0);
+      ops+=`<div class="op s-${op.status}"><div class="oprow"><span class="n">${esc(op.operation)}</span>`+
+        `<span class="v">${op.scanned}/${op.planned} (${pct}%)</span></div>`+
+        `<div class="bar"><div class="fill" style="width:${pct}%"></div></div></div>`;
+    });
+    card.innerHTML=
+      `<div class="chead"><span class="num">${esc(o.order_full_num)}</span>`+
+      (o.client?`<span class="client">${esc(o.client)}</span>`:``)+
+      (o.order_pct>=100?`<span class="badge b-done">готов</span>`:``)+`</div>`+
+      `<div class="obar"><div class="ofill ${doneClass}" style="width:${Math.min(100,o.order_pct)}%"></div></div>`+
+      `<div class="ometa"><span>Готовность заказа</span><span>${o.done}/${o.total} · ${o.order_pct}%</span></div>`+
+      `<div class="ops">${ops}</div>`;
+    grid.appendChild(card);
+  });
+  const t=new Date();
+  $("upd").textContent="обновлено "+t.toLocaleTimeString("ru-RU");
+}
+load();
+setInterval(load, 5000);   // автообновление каждые 5 сек
+</script>
+</body>
+</html>

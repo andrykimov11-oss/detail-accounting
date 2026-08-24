@@ -89,6 +89,8 @@ class LinkResult:
     status: LinkStatus = LinkStatus.NOT_FOUND
     order_full_num: str = ""                   # 'ПС00-007936' — если разрешено
     order_date: str = ""                        # дата заказа 1С (ISO) — часть ключа
+    deadline: str = ""                          # плановая дата выдачи (ISO) — для очереди/просрочки
+    route_flags: list[str] = field(default_factory=list)  # сдвойка/фрезеровка/радиусы в маршруте
     client_name: str = ""                      # клиент из 1С
     xbir_client: str = ""                      # клиент, извлечённый из .xbir
     candidates: list[str] = field(default_factory=list)
@@ -105,6 +107,28 @@ class LinkResult:
     def needs_operator(self) -> bool:
         """Требуется ручное сопоставление технологом."""
         return self.status in (LinkStatus.MANUAL_REQUIRED, LinkStatus.NOT_FOUND)
+
+
+# «Раздваивающие» маршрут операции — их наличие нужно контролировать на упаковке
+# (маршрут заказа ветвится, важно убедиться, что они сделаны).
+ROUTE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "сдвойка": ("сдвой",),
+    "фрезеровка": ("фрезер",),
+    "радиусы": ("радиус",),
+}
+
+
+def detect_route_flags(operations: list[str]) -> list[str]:
+    """Какие из контрольных операций (сдвойка/фрезеровка/радиусы) есть в маршруте."""
+    text = " ".join(operations).lower()
+    return [name for name, kws in ROUTE_KEYWORDS.items()
+            if any(k in text for k in kws)]
+
+
+def _order_extras(c) -> tuple[str, list[str]]:
+    """Срок (ISO) и флаги маршрута выбранного кандидата 1С."""
+    deadline = c.deadline.isoformat() if getattr(c, "deadline", None) else ""
+    return deadline, detect_route_flags(getattr(c, "operations", []) or [])
 
 
 # --- Нормализация наименований ----------------------------------------------
@@ -250,6 +274,7 @@ def resolve_order_link(
         result.status = LinkStatus.UNIQUE
         result.order_full_num = only.order_full_num
         result.order_date = only.order_date.isoformat() if only.order_date else ""
+        result.deadline, result.route_flags = _order_extras(only)
         result.client_name = only.client_name
         result.reason = "единственный кандидат в 1С"
         return result
@@ -292,6 +317,7 @@ def resolve_order_link(
                          else LinkStatus.RESOLVED_BY_WINDOW)
         result.order_full_num = best.order_full_num
         result.order_date = best.order_date.isoformat() if best.order_date else ""
+        result.deadline, result.route_flags = _order_extras(best)
         result.client_name = best.client_name
         result.reason += (
             f"по сроку исполнения подходит один заказ ({best.order_full_num})"
@@ -304,6 +330,7 @@ def resolve_order_link(
         result.status = LinkStatus.RESOLVED_BY_CLIENT
         result.order_full_num = best.order_full_num
         result.order_date = best.order_date.isoformat() if best.order_date else ""
+        result.deadline, result.route_flags = _order_extras(best)
         result.client_name = best.client_name
         result.reason += (
             f"клиент «{xbir_client}» однозначно совпал с «{best.client_name}»"

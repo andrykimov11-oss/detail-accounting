@@ -381,6 +381,18 @@ async function sendScan(qr) {
   }
 }
 
+// Подтверждённый переход на другой заказ: повторяем скан с флагом switch.
+async function confirmSwitch() {
+  if (!lastQr) return;
+  const res = await api("/api/scan", {
+    qr_code: lastQr, switch: true,
+    area_id: state.area.area_id,
+    operator_id: state.operator.operator_id,
+    operation_1c: state.operation,
+  });
+  handleResult(res);
+}
+
 // Скан пачкой: занести введённое количество одинаковых деталей за раз.
 async function addQty() {
   const inp = $("qtyInput");
@@ -466,6 +478,15 @@ function handleResult(res) {
       (detLine ? `<div class="det">${detLine}</div>` : "") +
       `<div class="count">${res.scanned_count} при плане ${res.planned_qty}</div>` +
       `<div class="msg">Проверьте деталь</div>`;
+  } else if (res.status === "other_order") {
+    // Чужой паллет: деталь другого заказа. Требуем подтверждение перехода.
+    fb.className = "feedback over";
+    fb.innerHTML = `<div class="big">⚠ Другой заказ</div>` +
+      `<div class="msg">${res.message}</div>` +
+      `<div class="picks">` +
+      `<button class="pick" onclick="confirmSwitch()">Перейти к заказу ${res.switch_order_full}</button>` +
+      `<button class="pick" onclick="setFeedbackIdle()">Отмена — это чужая деталь</button>` +
+      `</div>`;
   } else if (res.suggest && res.suggest.length) {
     renderPicks(res.suggest, "Деталь не распознана");
   } else {

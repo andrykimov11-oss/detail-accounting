@@ -25,7 +25,7 @@ import os
 import re
 import sys
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from flask import Flask, current_app, jsonify, render_template, request
@@ -35,6 +35,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 from pipeline import ProductionCore, qr_of  # noqa: E402
 from scan_processor import FactStatus, ScanEvent, suggest_details  # noqa: E402
 from storage import Storage  # noqa: E402
+
+# Операция упаковки (пилотная): подетальный контроль комплектности заказа.
+PACK_OP = "Упаковка раскроя"
 
 # GUID детали (как в .xbir/на бирке Базиса): 8-4-4-4-12 hex.
 _GUID_RE = re.compile(
@@ -496,6 +499,7 @@ def create_app(db_path: str | Path = "prod.db") -> Flask:
             area_id=data.get("area_id", ""),
             operator_id=data.get("operator_id", ""),
             operation_1c=data.get("operation_1c", ""),
+            confirm_switch=bool(data.get("switch", False)),
         )
 
     @app.post("/api/scan-qty")
@@ -518,6 +522,7 @@ def create_app(db_path: str | Path = "prod.db") -> Flask:
             operation_1c=data.get("operation_1c", ""),
             count=max(1, count),
             check_duplicate=False,
+            confirm_switch=bool(data.get("switch", False)),
         )
 
     @app.post("/api/pick-detail")
@@ -572,6 +577,170 @@ def create_app(db_path: str | Path = "prod.db") -> Flask:
         finally:
             core.storage.close()
 
+    # --- Дашборд участка упаковки -------------------------------------------
+
+    @app.get("/packing")
+    def packing_page():
+        return render_template("packing.html")
+
+    @app.get("/api/packing")
+    def api_packing():
+        """
+        Данные дашборда упаковки: текущий заказ (прогресс + спецификация деталей
+        по цветам + флаги маршрута) и очередь заказов на упаковку по сроку.
+        """
+        core = _core()
+        try:
+            today = date.today().isoformat()
+            orders = []
+            for num in core.storage.get_order_numbers():
+                details = core.storage.get_details_by_order(num)
+                if not details:
+                    continue
+                facts = {f["detail_uid"]: f["scanned_count"]
+                         for f in core.storage.get_facts_by_order(num)
+                         if f["operation_1c"] == PACK_OP}
+                losses = core.storage.get_losses(num, PACK_OP)
+                spec, planned_total, scanned_total = [], 0, 0
+                all_covered = True
+                for d in details:
+                    qty = d["qty"] or 0
+                    sc = min(facts.get(d["detail_uid"], 0), qty)
+                    miss = losses.get(d["detail_uid"], 0)
+                    planned_total += qty
+                    scanned_total += sc
+                    covered = sc + miss >= qty          # набрано или списано в недостачу
+                    if qty and not covered:
+                        all_covered = False
+                    color = ("green" if qty and sc >= qty
+                             else "missing" if miss > 0 and covered
+                             else "yellow" if sc > 0 else "red")
+                    spec.append({
+                        "uid": d["detail_uid"],
+                        "pos": d["pos_no"],
+                        "size": f'{int(d["length"] or 0)}×{int(d["width"] or 0)}'
+                                f'×{int(d["thickness"] or 0)}',
+                        "material": d["material_name"] or "",
+                        "qty": qty, "scanned": sc, "missing": miss, "color": color,
+                    })
+                link = core.storage.get_order_link(num)
+                deadline = (link["deadline"] if link else "") or ""
+                complete = planned_total > 0 and all_covered
+                flags = (link["route_flags"].split(",")
+                         if link and link["route_flags"] else [])
+                orders.append({
+                    "order_num": num,
+                    "order_full_num": (link["order_full_num"] if link else "") or str(num),
+                    "client": (link["client_name"] if link else "") or "",
+                    "deadline": deadline,
+                    "overdue": bool(deadline) and deadline < today and not complete,
+                    "route_flags": flags,
+                    "scanned_total": scanned_total, "planned_total": planned_total,
+                    "pct": round(scanned_total / planned_total * 100) if planned_total else 0,
+                    "complete": complete,
+                    "in_progress": 0 < scanned_total < planned_total and not complete,
+                    "spec": spec,
+                })
+
+            def dl_key(o):
+                return (o["deadline"] or "9999-99-99", o["order_num"])
+
+            by_num = {o["order_num"]: o for o in orders}
+            # Текущий = заказ последнего скана упаковки (следует за работой),
+            # если он ещё не закрыт; иначе — ближайший по сроку незакрытый.
+            last = core.storage.get_last_active_order(PACK_OP)
+            current = by_num.get(last) if (last in by_num and not by_num[last]["complete"]) else None
+            if current is None:
+                inprog = sorted([o for o in orders if o["in_progress"]], key=dl_key)
+                notdone = sorted([o for o in orders if not o["complete"]], key=dl_key)
+                current = inprog[0] if inprog else (notdone[0] if notdone else None)
+            cur_num = current["order_num"] if current else None
+
+            def light(o):
+                return {k: v for k, v in o.items() if k != "spec"}
+
+            # Отложенные — начатые, но не законченные (ждут остальные детали).
+            deferred = [light(o) for o in sorted(
+                (o for o in orders if o["in_progress"] and o["order_num"] != cur_num),
+                key=dl_key)]
+            # Очередь — ещё не начатые на упаковке.
+            queue = [light(o) for o in sorted(
+                (o for o in orders if not o["complete"] and o["scanned_total"] == 0
+                 and o["order_num"] != cur_num), key=dl_key)]
+            return jsonify({"current": current, "deferred": deferred,
+                            "queue": queue, "today": today})
+        finally:
+            core.storage.close()
+
+    @app.post("/api/mark-missing")
+    def api_mark_missing():
+        """
+        Отметить недостачу детали на упаковке (не дошла / потеряна). Позволяет
+        закрыть заказ с недостачей; запись идёт в отчёт по потерям.
+        """
+        data = request.get_json(force=True, silent=True) or {}
+        detail_uid = str(data.get("detail_uid", "")).strip()
+        try:
+            order_num = int(data.get("order_num"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "order_num обязателен"}), 400
+        if not detail_uid:
+            return jsonify({"error": "detail_uid обязателен"}), 400
+        try:
+            count = max(1, int(data.get("count", 1)))
+        except (TypeError, ValueError):
+            count = 1
+        core = _core()
+        try:
+            core.storage.mark_loss(
+                order_num, data.get("operation_1c") or PACK_OP, detail_uid,
+                count, operator_id=data.get("operator_id", ""),
+                note=data.get("note", ""))
+            return jsonify({"ok": True})
+        finally:
+            core.storage.close()
+
+    # --- Монитор: заказы в работе и степень закрытия ------------------------
+
+    @app.get("/board")
+    def board_page():
+        return render_template("board.html")
+
+    @app.get("/api/board")
+    def api_board():
+        """Все заказы в базе с прогрессом по операциям — для экрана-монитора."""
+        core = _core()
+        try:
+            operations = _all_operations(core)
+            out = []
+            for num in core.storage.get_order_numbers():
+                ctx = core.load_order(num)
+                statuses = [s for s in core.order_status(ctx, operations)
+                            if s.planned_total > 0]
+                link = core.storage.get_order_link(num)
+                ops = [{
+                    "operation": s.operation_1c,
+                    "scanned": s.scanned_total,
+                    "planned": s.planned_total,
+                    "pct": s.progress_pct,
+                    "status": s.status.value,
+                } for s in statuses]
+                tot_p = sum(s.planned_total for s in statuses)
+                tot_s = sum(min(s.scanned_total, s.planned_total) for s in statuses)
+                out.append({
+                    "order_num": num,
+                    "order_full_num": (link["order_full_num"] if link else "") or str(num),
+                    "client": (link["client_name"] if link else "") or "",
+                    "order_pct": round(tot_s / tot_p * 100) if tot_p else 0,
+                    "done": tot_s, "total": tot_p,
+                    "operations": ops,
+                })
+            # незакрытые сверху (по возрастанию % готовности)
+            out.sort(key=lambda o: (o["order_pct"], o["order_num"]))
+            return jsonify({"orders": out})
+        finally:
+            core.storage.close()
+
     return app
 
 
@@ -619,7 +788,8 @@ def _detail_view(core: ProductionCore, qr_code: str) -> dict | None:
 
 def _process_scan(core: ProductionCore, *, qr_code: str, area_id: str,
                   operator_id: str, operation_1c: str,
-                  count: int = 1, check_duplicate: bool = True):
+                  count: int = 1, check_duplicate: bool = True,
+                  confirm_switch: bool = False):
     """
     Общее тело обработки скана и «выбора детали пальцем».
 
@@ -643,7 +813,30 @@ def _process_scan(core: ProductionCore, *, qr_code: str, area_id: str,
         active = _active_orders.get(operator_id)
         detail_row = core.storage.get_detail_by_qr(qr_code)
 
-        if active is not None:
+        # Защита от чужого паллета: деталь известна, но из ДРУГОГО заказа, чем
+        # тот, что оператор пакует сейчас. Не переключаемся молча — просим
+        # подтверждение, иначе деталь уйдёт в чужой паллет.
+        if (not confirm_switch and active is not None and detail_row is not None
+                and detail_row["order_num"] != active):
+            other = detail_row["order_num"]
+            link = core.storage.get_order_link(other)
+            full = (link["order_full_num"] if link else "") or str(other)
+            act_link = core.storage.get_order_link(active)
+            act_full = (act_link["order_full_num"] if act_link else "") or str(active)
+            return jsonify({
+                "status": "other_order",
+                "message": f"Деталь из заказа {full}, а вы пакуете {act_full}. "
+                           f"Перейти к заказу {full}?",
+                "switch_order_num": other,
+                "switch_order_full": full,
+                "detail": _detail_view(core, qr_code),
+                "scanned_count": 0, "planned_qty": 0, "order_num": active,
+                "suggest": [],
+            })
+
+        if confirm_switch and detail_row is not None:
+            order_num = detail_row["order_num"]      # подтверждённый переход
+        elif active is not None:
             order_num = active
         elif detail_row is not None:
             order_num = detail_row["order_num"]
@@ -670,8 +863,9 @@ def _process_scan(core: ProductionCore, *, qr_code: str, area_id: str,
         result = core.handle_scan(event, ctx, count=count,
                                   check_duplicate=check_duplicate)
 
-        # Первый принятый скан фиксирует заказ смены.
-        if result.status == FactStatus.ACCEPTED and active is None:
+        # Принятый скан фиксирует текущий заказ (в т.ч. после подтверждённого
+        # перехода на другой заказ) — дальнейшие сканы идут в него.
+        if result.status == FactStatus.ACCEPTED:
             _active_orders[operator_id] = order_num
 
         suggest = (

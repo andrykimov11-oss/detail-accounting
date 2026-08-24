@@ -147,6 +147,109 @@ def test_scan_qty_overplan_when_exceeds(client):
     assert res["status"] == "overplan"
 
 
+def test_board_shows_orders_and_progress(client):
+    """Монитор: страница отдаётся, /api/board возвращает заказы с прогрессом."""
+    assert client.get("/board").status_code == 200
+    op = _login_and_shift(client, EDGE_08)
+    _scan_qty(client, UID_SHELF_16, 3, op)          # закрыли кромление 0,8
+
+    data = client.get("/api/board").get_json()
+    order = next(o for o in data["orders"] if o["order_num"] == 6564)
+    assert order["total"] > 0 and order["done"] >= 3
+    edging = next(x for x in order["operations"] if x["operation"] == EDGE_08)
+    assert edging["scanned"] == 3 and edging["status"] == "completed"
+
+
+def test_packing_dashboard(client, app_db):
+    """
+    Дашборд упаковки: текущий заказ с прогрессом, срок/просрочка, флаги
+    маршрута и цвета деталей (зелёная — целиком, жёлтая — частично).
+    """
+    from storage import Storage
+    s = Storage(app_db)
+    s.upsert_order_link(order_num=6564, status="unique",
+                        order_full_num="ЛД00-006564", order_date="2026-06-09",
+                        deadline="2020-01-01",           # заведомо просрочен
+                        route_flags="сдвойка", client_name="Спецторг ООО")
+    s.close()
+
+    def pack(uid, n):
+        return client.post("/api/scan-qty", json={
+            "qr_code": uid, "count": n, "area_id": "area_packing",
+            "operator_id": OP_ID, "operation_1c": "Упаковка раскроя"}).get_json()
+
+    pack(UID_PANEL_16, 2)   # панель 2/2 → зелёная
+    pack(UID_SHELF_16, 1)   # полка 1/3 → жёлтая
+
+    assert client.get("/packing").status_code == 200
+    d = client.get("/api/packing").get_json()
+    cur = d["current"]
+    assert cur["order_full_num"] == "ЛД00-006564"
+    assert cur["overdue"] is True
+    assert "сдвойка" in cur["route_flags"]
+    colors = {row["color"] for row in cur["spec"]}
+    assert "green" in colors and "yellow" in colors
+    assert isinstance(d["queue"], list)
+    assert isinstance(d["deferred"], list)
+
+
+def test_scan_confirms_before_switching_orders(client, app_db):
+    """
+    Защита от чужого паллета: скан детали ДРУГОГО заказа не переключает молча,
+    а требует подтверждения; только с флагом switch деталь идёт в новый заказ.
+    """
+    from storage import Storage
+    other_uid = "AAAAAAAA-0000-0000-0000-000000000001"
+    s = Storage(app_db)
+    s.upsert_detail({
+        "detail_uid": other_uid, "order_num": 9999, "qr_code": qr(other_uid),
+        "pos_no": "1", "material_name": "ЛДСП", "thickness": 16,
+        "length": 500, "width": 300, "qty": 1,
+        "edge_l1": 0.8, "edge_l2": 0.8, "edge_w1": 0.8, "edge_w2": 0.8,
+        "edge_total_len": 0, "perimeter": 0, "area": 0, "source_file": "",
+    })
+    s.close()
+
+    op = _login_and_shift(client, EDGE_08)
+    r1 = _scan(client, qr(UID_SHELF_16), op)        # закрепили активный заказ 6564
+    assert r1["status"] == "accepted" and r1["order_num"] == 6564
+
+    r2 = _scan(client, qr(other_uid), op)           # деталь заказа 9999
+    assert r2["status"] == "other_order"
+    assert r2["switch_order_num"] == 9999
+
+    r3 = client.post("/api/scan", json={            # подтвердили переход
+        "qr_code": qr(other_uid), "switch": True, "area_id": AREA,
+        "operator_id": OP_ID, "operation_1c": op}).get_json()
+    assert r3["status"] == "accepted" and r3["order_num"] == 9999
+
+
+def test_mark_missing_closes_order_with_shortage(client, app_db):
+    """
+    «Нет детали»: помеченная недостача закрывает заказ (набрано + недостача =
+    план), заказ уходит с экрана текущего.
+    """
+    PACK = "Упаковка раскроя"
+
+    def pack(uid, n):
+        return client.post("/api/scan-qty", json={
+            "qr_code": uid, "count": n, "area_id": "area_packing",
+            "operator_id": OP_ID, "operation_1c": PACK}).get_json()
+
+    pack(qr(UID_PANEL_16), 2)                        # панель 2/2 — зелёная
+    d = client.get("/api/packing").get_json()
+    assert d["current"]["order_num"] == 6564
+    assert any(x["color"] == "red" for x in d["current"]["spec"])   # полка ещё 0
+
+    ok = client.post("/api/mark-missing", json={
+        "order_num": 6564, "detail_uid": UID_SHELF_16,
+        "operation_1c": PACK, "count": 3}).get_json()
+    assert ok["ok"] is True
+
+    d2 = client.get("/api/packing").get_json()       # заказ закрыт с недостачей
+    assert d2["current"] is None
+
+
 def test_scan_accepted_and_counter_grows(client, monkeypatch):
     # Гасим окно антидубликата, чтобы проверить рост счётчика по одной детали.
     monkeypatch.setattr(operator_app, "_active_orders", {})

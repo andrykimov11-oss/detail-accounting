@@ -143,6 +143,8 @@ class ProductionCore:
                 status=r.status.value,
                 order_full_num=r.order_full_num,
                 order_date=r.order_date,
+                deadline=r.deadline,
+                route_flags=",".join(r.route_flags),
                 client_name=r.client_name,
                 xbir_client=r.xbir_client,
                 reason=r.reason,

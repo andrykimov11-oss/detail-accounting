@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Упаковка — дашборд</title>
+<style>
+  :root{--bg:#0e1116;--panel:#1b212b;--panel2:#232c39;--text:#f2f5f8;--muted:#9aa7b8;
+    --blue:#2f6df6;--green:#16a34a;--yellow:#d4a017;--red:#dc2626;--over:#e8710a;}
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,"Segoe UI",Roboto,Arial,sans-serif;}
+  .top{display:flex;align-items:center;gap:14px;padding:12px 20px;background:var(--panel);border-bottom:2px solid #000;position:sticky;top:0;z-index:5;}
+  .top h1{font-size:20px;margin:0;font-weight:600;}
+  .top .spacer{flex:1;} .top .upd{color:var(--muted);font-size:13px;}
+  .wrap{display:grid;grid-template-columns:1.7fr 1fr;gap:16px;padding:16px;align-items:start;}
+  @media(max-width:820px){.wrap{grid-template-columns:1fr;}}
+  .card{background:var(--panel);border-radius:14px;padding:16px;border:1px solid #000;}
+  h2{font-size:15px;color:var(--muted);margin:0 0 12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;}
+  .ohead{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;}
+  .onum{font-size:30px;font-weight:800;}
+  .oclient{font-size:18px;color:var(--muted);}
+  .odl{margin-left:auto;font-size:16px;color:var(--muted);}
+  .odl.over{color:#fff;background:var(--red);padding:3px 12px;border-radius:10px;font-weight:700;}
+  .big{margin:14px 0 6px;font-size:22px;font-weight:700;}
+  .obar{height:20px;border-radius:10px;background:#0c0f14;overflow:hidden;}
+  .ofill{height:100%;background:var(--blue);}
+  .flags{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0 4px;}
+  .flag{background:#3a2c10;color:#ffd479;border:1px solid #6b5316;padding:6px 12px;border-radius:10px;font-size:15px;font-weight:600;}
+  .flag i{font-style:normal;margin-right:6px;}
+  .flabel{color:var(--muted);font-size:14px;align-self:center;}
+  table{width:100%;border-collapse:collapse;margin-top:14px;}
+  th{color:var(--muted);font-size:13px;text-align:left;font-weight:600;padding:6px 8px;border-bottom:1px solid #000;}
+  td{padding:9px 8px;border-bottom:1px solid #12161d;font-size:16px;}
+  tr.green{background:rgba(22,163,74,.14);} tr.yellow{background:rgba(212,160,23,.14);} tr.red{background:rgba(220,38,38,.12);}
+  .dot{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:8px;vertical-align:-1px;}
+  .dot.green{background:var(--green);} .dot.yellow{background:var(--yellow);} .dot.red{background:var(--red);}
+  .cnt{font-weight:700;white-space:nowrap;}
+  .cnt.green{color:#4ade80;} .cnt.yellow{color:#f2c94c;} .cnt.red{color:#f87171;}
+  /* Готовые детали — компактная строка зелёных номеров (схлопнулись) */
+  .doneline{display:flex;flex-wrap:wrap;gap:7px;margin:12px 0 4px;}
+  .doneline .lbl{color:var(--muted);font-size:14px;align-self:center;margin-right:2px;}
+  .chip{background:rgba(22,163,74,.18);color:#7ef0a6;border:1px solid #1c7a44;
+    border-radius:9px;padding:5px 10px;font-size:15px;font-weight:700;}
+  .chip.miss{background:rgba(154,167,184,.14);color:#c3ccd8;border-color:#3a4453;}
+  .nobtn{background:transparent;color:#f87171;border:1px solid #7a2020;border-radius:8px;
+    padding:5px 12px;font-size:14px;font-weight:600;cursor:pointer;}
+  .nobtn:active{background:#3a1616;}
+  tr.missing{background:rgba(154,167,184,.10);}
+  .chip.new{animation:chipPop .55s ease-out;}
+  @keyframes chipPop{
+    0%{transform:scale(.4);background:#eafff0;color:#04240f;}
+    55%{transform:scale(1.15);background:#4ade80;color:#04240f;}
+    100%{transform:scale(1);}
+  }
+  /* Всплытие только что отпиканной детали + пульс-галочка */
+  tr.picked{animation:rowRise .5s ease-out;}
+  @keyframes rowRise{0%{transform:translateY(14px);opacity:0;}100%{transform:none;opacity:1;}}
+  .pulse{position:relative;}
+  .pulse::after{content:"✓";position:absolute;right:8px;top:50%;transform:translateY(-50%) scale(.4);
+    color:#4ade80;font-size:26px;font-weight:900;opacity:0;animation:okPulse 1s ease-out;}
+  @keyframes okPulse{0%{opacity:0;transform:translateY(-50%) scale(.4);}
+    30%{opacity:1;transform:translateY(-50%) scale(1.25);}100%{opacity:0;transform:translateY(-50%) scale(1);}}
+
+  .q{display:flex;flex-direction:column;gap:8px;}
+  .qi{display:flex;align-items:baseline;gap:10px;background:var(--panel2);border-radius:10px;padding:10px 12px;}
+  .qi.over{border:1px solid var(--red);}
+  .qi .qn{font-size:17px;font-weight:700;} .qi .qc{color:var(--muted);font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .qi .qd{margin-left:auto;font-size:14px;color:var(--muted);white-space:nowrap;}
+  .qi.over .qd{color:#fff;background:var(--red);padding:2px 8px;border-radius:8px;font-weight:700;}
+  .empty{color:var(--muted);font-size:17px;padding:30px 6px;text-align:center;}
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>Упаковка · дашборд</h1>
+  <span class="spacer"></span>
+  <span class="upd" id="upd">обновление…</span>
+</div>
+<div class="wrap">
+  <div class="card" id="cur"><div class="empty">Нет заказа в работе</div></div>
+  <div style="display:flex;flex-direction:column;gap:16px;">
+    <div class="card">
+      <h2>Отложенные <span id="defc" style="color:#f2c94c;"></span></h2>
+      <div class="q" id="deferred"></div>
+      <div style="color:var(--muted);font-size:12px;margin-top:6px;">начаты, ждут остальные детали</div>
+    </div>
+    <div class="card">
+      <h2>Очередь на упаковку</h2>
+      <div class="q" id="queue"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+function esc(s){return String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+function dlfmt(iso){ if(!iso) return "срок —"; const p=iso.split("-"); return p.length===3?`до ${p[2]}.${p[1]}.${p[0]}`:iso; }
+
+let prevScan={};        // uid -> отпикано (дифф между обновлениями для анимаций)
+let prevOrder=null;
+let curOrderNum=null;   // номер текущего заказа (для пометки недостачи)
+
+async function markMissing(uid, remain, pos){
+  if(curOrderNum==null) return;
+  if(!confirm(`Отметить недостачу: Поз. ${pos} — нет ${remain} шт?`)) return;
+  await fetch("/api/mark-missing",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({order_num:curOrderNum,detail_uid:uid,operation_1c:"Упаковка раскроя",count:remain,note:"дашборд упаковки"})});
+  load();
+}
+
+function renderCurrent(o){
+  if(!o){ $("cur").innerHTML='<div class="empty">Нет заказа в работе</div>'; prevScan={}; prevOrder=null; return; }
+  if(o.order_num!==prevOrder){ prevScan={}; prevOrder=o.order_num; }   // смена заказа — без анимаций
+  const spec=o.spec||[];
+  const first=Object.keys(prevScan).length===0;
+
+  // дифф: что только что пикнули, что только что завершили
+  const justPicked=new Set(), newDone=new Set();
+  if(!first) spec.forEach(d=>{
+    if(d.scanned>(prevScan[d.uid]||0)){ justPicked.add(d.uid); if(d.color==="green") newDone.add(d.uid); }
+  });
+
+  curOrderNum=o.order_num;
+  const done=spec.filter(d=>d.color==="green");
+  const missed=spec.filter(d=>d.color==="missing");
+  const active=spec.filter(d=>d.color==="yellow"||d.color==="red");
+  // только что отпиканные — наверх
+  active.sort((a,b)=>(justPicked.has(a.uid)?0:1)-(justPicked.has(b.uid)?0:1));
+
+  let chips="";
+  if(done.length){
+    chips+='<div class="doneline"><span class="lbl">Готово ('+done.length+'):</span>'+
+      done.map(d=>`<span class="chip ${newDone.has(d.uid)?'new':''}">${esc(d.pos)}</span>`).join("")+'</div>';
+  }
+  if(missed.length){
+    chips+='<div class="doneline"><span class="lbl">Недостача ('+missed.length+'):</span>'+
+      missed.map(d=>`<span class="chip miss">✕ ${esc(d.pos)}${d.missing>1?' ×'+d.missing:''}</span>`).join("")+'</div>';
+  }
+  let rows="";
+  active.forEach(d=>{
+    const pk=justPicked.has(d.uid);
+    const remain=Math.max(1,(d.qty||0)-(d.scanned||0));
+    rows+=`<tr class="${d.color} ${pk?'picked':''}"><td class="${pk?'pulse':''}"><span class="dot ${d.color}"></span>Поз. ${esc(d.pos)}</td>`+
+      `<td>${esc(d.size)}</td><td>${esc(d.material)}</td>`+
+      `<td class="cnt ${d.color}" style="text-align:right;">${d.scanned} из ${d.qty}</td>`+
+      `<td style="text-align:right;"><button class="nobtn" onclick="markMissing('${d.uid}',${remain},'${esc(d.pos)}')">нет</button></td></tr>`;
+  });
+
+  let flags="";
+  if(o.route_flags && o.route_flags.length){
+    flags='<div class="flags"><span class="flabel">Контроль маршрута:</span>'+
+      o.route_flags.map(f=>`<span class="flag"><i>⚑</i>${esc(f)}</span>`).join("")+'</div>';
+  }
+  const pct=Math.min(100,o.pct||0);
+  $("cur").innerHTML=
+    `<h2>Текущий заказ</h2>`+
+    `<div class="ohead"><span class="onum">${esc(o.order_full_num)}</span>`+
+    (o.client?`<span class="oclient">${esc(o.client)}</span>`:``)+
+    `<span class="odl ${o.overdue?'over':''}">${dlfmt(o.deadline)}</span></div>`+
+    `<div class="big">Отпикано ${o.scanned_total} из ${o.planned_total} деталей · ${o.pct}%</div>`+
+    `<div class="obar"><div class="ofill" style="width:${pct}%"></div></div>`+
+    flags+chips+
+    `<div style="color:#9aa7b8;font-size:13px;margin:14px 0 2px;">Осталось упаковать (${active.length}):</div>`+
+    `<table><thead><tr><th>Деталь</th><th>Размер</th><th>Материал</th><th style="text-align:right;">Отпикано</th><th></th></tr></thead>`+
+    `<tbody>${rows||'<tr><td colspan="5" class="empty">всё упаковано ✓</td></tr>'}</tbody></table>`;
+
+  const ns={}; spec.forEach(d=>ns[d.uid]=d.scanned); prevScan=ns;   // сохранить историю
+}
+
+function renderList(id, list, empty){
+  const box=$(id);
+  if(!list||!list.length){ box.innerHTML=`<div class="empty">${empty}</div>`; return; }
+  box.innerHTML=list.map(o=>{
+    const prog=o.in_progress?`<span style="color:#f2c94c;font-size:13px;">${o.pct}%</span>`:"";
+    return `<div class="qi ${o.overdue?'over':''}"><span class="qn">${esc(o.order_full_num)}</span>${prog}`+
+      `<span class="qc">${esc(o.client)}</span>`+
+      `<span class="qd">${dlfmt(o.deadline)}</span></div>`;
+  }).join("");
+}
+
+async function load(){
+  let d;
+  try{ d=await (await fetch("/api/packing")).json(); }
+  catch(e){ $("upd").textContent="нет связи с сервером"; return; }
+  renderCurrent(d.current);
+  renderList("deferred", d.deferred, "нет отложенных");
+  renderList("queue", d.queue, "очередь пуста");
+  $("defc").textContent=(d.deferred&&d.deferred.length)?("· "+d.deferred.length):"";
+  $("upd").textContent="обновлено "+new Date().toLocaleTimeString("ru-RU");
+}
+load(); setInterval(load,3000);   // чаще — чтобы отпикивание было заметно почти сразу
+</script>
+</body>
+</html>

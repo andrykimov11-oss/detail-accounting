@@ -74,6 +74,8 @@ CREATE TABLE IF NOT EXISTS order_links (
     order_num      INTEGER PRIMARY KEY,      -- 7936 — число из .xbir
     order_full_num TEXT,                     -- 'ПС00-007936' — документ 1С
     order_date     TEXT,                     -- дата заказа 1С (ISO) — часть ключа для записи статуса
+    deadline       TEXT,                     -- плановая дата выдачи (ISO) — для очереди/просрочки
+    route_flags    TEXT,                     -- «раздваивающие» операции маршрута: сдвойка/фрезеровка/радиусы
     client_name    TEXT,                     -- клиент по данным 1С
     xbir_client    TEXT,                     -- клиент, извлечённый из .xbir
     status         TEXT NOT NULL,            -- unique/client/manual/not_found
@@ -144,6 +146,19 @@ CREATE TABLE IF NOT EXISTS facts (
     PRIMARY KEY (operation_1c, detail_uid)
 );
 
+-- Недостачи: деталь не дошла до участка / потеряна. Оператор помечает вручную.
+-- Позволяет закрыть заказ с недостачей и собрать отчёт по потерям.
+CREATE TABLE IF NOT EXISTS losses (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_num     INTEGER NOT NULL,
+    operation_1c  TEXT NOT NULL,
+    detail_uid    TEXT NOT NULL,
+    qty           INTEGER NOT NULL,
+    operator_id   TEXT,
+    note          TEXT,
+    created_at    TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_details_order ON details(order_num);
 CREATE INDEX IF NOT EXISTS idx_details_qr ON details(qr_code);
 CREATE INDEX IF NOT EXISTS idx_scan_events_order ON scan_events(operation_1c);
@@ -181,6 +196,10 @@ class Storage:
                 self._conn.execute("PRAGMA table_info(order_links)").fetchall()}
         if "order_date" not in cols:
             self._conn.execute("ALTER TABLE order_links ADD COLUMN order_date TEXT")
+        if "deadline" not in cols:
+            self._conn.execute("ALTER TABLE order_links ADD COLUMN deadline TEXT")
+        if "route_flags" not in cols:
+            self._conn.execute("ALTER TABLE order_links ADD COLUMN route_flags TEXT")
 
     def close(self):
         if self._conn:
@@ -235,6 +254,51 @@ class Storage:
 
     def count_details(self) -> int:
         return self._conn.execute("SELECT COUNT(*) FROM details").fetchone()[0]
+
+    def get_order_numbers(self) -> list[int]:
+        """Все номера заказов, по которым есть импортированные детали."""
+        return [r[0] for r in self._conn.execute(
+            "SELECT DISTINCT order_num FROM details ORDER BY order_num"
+        ).fetchall()]
+
+    def get_last_active_order(self, operation_1c: str) -> Optional[int]:
+        """Заказ последнего засчитанного скана по операции (текущий на участке)."""
+        row = self._conn.execute("""
+            SELECT d.order_num AS o
+              FROM scan_events se
+              JOIN details d ON d.detail_uid = se.detail_uid
+             WHERE se.operation_1c = ? AND se.status = 'accepted'
+          ORDER BY se.scanned_at DESC
+             LIMIT 1
+        """, (operation_1c,)).fetchone()
+        return row["o"] if row else None
+
+    # --- Недостачи (потери) --------------------------------------------------
+
+    def mark_loss(self, order_num: int, operation_1c: str, detail_uid: str,
+                  qty: int, operator_id: str = "", note: str = "") -> None:
+        """Отметить недостачу детали (не дошла/потеряна) на операции."""
+        self._conn.execute("""
+            INSERT INTO losses (order_num, operation_1c, detail_uid, qty,
+                operator_id, note, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (order_num, operation_1c, detail_uid, int(qty), operator_id, note,
+              datetime.now().isoformat()))
+        self._conn.commit()
+
+    def get_losses(self, order_num: int, operation_1c: str) -> dict[str, int]:
+        """Сумма недостач по деталям заказа для операции: detail_uid → qty."""
+        rows = self._conn.execute("""
+            SELECT detail_uid, SUM(qty) AS q FROM losses
+             WHERE order_num=? AND operation_1c=? GROUP BY detail_uid
+        """, (order_num, operation_1c)).fetchall()
+        return {r["detail_uid"]: r["q"] for r in rows}
+
+    def get_losses_by_order(self, order_num: int) -> list[sqlite3.Row]:
+        """Все записи недостач заказа (для отчёта)."""
+        return self._conn.execute(
+            "SELECT * FROM losses WHERE order_num=? ORDER BY created_at",
+            (order_num,)).fetchall()
 
     # --- area_operations (справочник участок → операция) --------------------
 
@@ -311,16 +375,19 @@ class Storage:
                           order_full_num: str = "", client_name: str = "",
                           xbir_client: str = "", reason: str = "",
                           candidates: list[str] | None = None,
-                          confirmed_by: str = "", order_date: str = "") -> None:
+                          confirmed_by: str = "", order_date: str = "",
+                          deadline: str = "", route_flags: str = "") -> None:
         """Записать результат разрешения связки заказа."""
         self._conn.execute("""
             INSERT INTO order_links (order_num, order_full_num, order_date,
-                client_name, xbir_client, status, reason, candidates,
-                confirmed_by, resolved_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                deadline, route_flags, client_name, xbir_client, status, reason,
+                candidates, confirmed_by, resolved_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(order_num) DO UPDATE SET
                 order_full_num=excluded.order_full_num,
                 order_date=excluded.order_date,
+                deadline=excluded.deadline,
+                route_flags=excluded.route_flags,
                 client_name=excluded.client_name,
                 xbir_client=excluded.xbir_client,
                 status=excluded.status,
@@ -328,8 +395,9 @@ class Storage:
                 candidates=excluded.candidates,
                 confirmed_by=excluded.confirmed_by,
                 resolved_at=excluded.resolved_at
-        """, (order_num, order_full_num, order_date, client_name, xbir_client,
-              status, reason, ";".join(candidates or []), confirmed_by,
+        """, (order_num, order_full_num, order_date, deadline, route_flags,
+              client_name, xbir_client, status, reason,
+              ";".join(candidates or []), confirmed_by,
               datetime.now().isoformat()))
         self._conn.commit()
 
