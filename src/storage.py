@@ -146,6 +146,20 @@ CREATE TABLE IF NOT EXISTS facts (
     PRIMARY KEY (operation_1c, detail_uid)
 );
 
+-- Регистрации камеры (опыт OQ-96): пассивное распознавание бирок над местом
+-- укладки. ИЗОЛИРОВАНО от facts/1С — это отдельный опыт, а не боевой факт.
+CREATE TABLE IF NOT EXISTS camera_regs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_num     INTEGER,
+    operation_1c  TEXT NOT NULL,
+    detail_uid    TEXT,
+    code          TEXT,
+    status        TEXT NOT NULL,     -- accepted/duplicate/unknown/prev_incomplete
+    camera_id     TEXT,
+    recognized_at TEXT,              -- метка кадра (от агента) — для задержки
+    registered_at TEXT NOT NULL      -- время записи на сервере
+);
+
 -- Недостачи: деталь не дошла до участка / потеряна. Оператор помечает вручную.
 -- Позволяет закрыть заказ с недостачей и собрать отчёт по потерям.
 CREATE TABLE IF NOT EXISTS losses (
@@ -299,6 +313,51 @@ class Storage:
         return self._conn.execute(
             "SELECT * FROM losses WHERE order_num=? ORDER BY created_at",
             (order_num,)).fetchall()
+
+    # --- Регистрации камеры (опыт OQ-96) -------------------------------------
+
+    def record_camera_reg(self, order_num, operation_1c: str, detail_uid,
+                          code: str, status: str, camera_id: str = "",
+                          recognized_at: str = "") -> None:
+        """Записать событие распознавания камерой (audit + замеры опыта)."""
+        self._conn.execute("""
+            INSERT INTO camera_regs (order_num, operation_1c, detail_uid, code,
+                status, camera_id, recognized_at, registered_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (order_num, operation_1c, detail_uid, code, status, camera_id,
+              recognized_at, datetime.now().isoformat()))
+        self._conn.commit()
+
+    def camera_detail_seen(self, operation_1c: str, detail_uid: str) -> bool:
+        """Уже была принятая регистрация этой детали по операции (дедуп)."""
+        return self._conn.execute("""
+            SELECT 1 FROM camera_regs
+             WHERE operation_1c=? AND detail_uid=? AND status='accepted' LIMIT 1
+        """, (operation_1c, detail_uid)).fetchone() is not None
+
+    def get_camera_recognized_uids(self, order_num: int,
+                                   operation_1c: str) -> set[str]:
+        """Множество распознанных камерой деталей заказа по операции."""
+        rows = self._conn.execute("""
+            SELECT DISTINCT detail_uid FROM camera_regs
+             WHERE order_num=? AND operation_1c=? AND status='accepted'
+        """, (order_num, operation_1c)).fetchall()
+        return {r["detail_uid"] for r in rows}
+
+    def get_last_camera_order(self, operation_1c: str) -> Optional[int]:
+        """Заказ последней принятой регистрации камерой (текущий на укладке)."""
+        row = self._conn.execute("""
+            SELECT order_num FROM camera_regs
+             WHERE operation_1c=? AND status='accepted' AND order_num IS NOT NULL
+          ORDER BY id DESC LIMIT 1
+        """, (operation_1c,)).fetchone()
+        return row["order_num"] if row else None
+
+    def get_camera_regs(self, operation_1c: str) -> list[sqlite3.Row]:
+        """Все события камеры по операции — для отчёта опыта."""
+        return self._conn.execute(
+            "SELECT * FROM camera_regs WHERE operation_1c=? ORDER BY id",
+            (operation_1c,)).fetchall()
 
     # --- area_operations (справочник участок → операция) --------------------
 

@@ -39,6 +39,12 @@ from storage import Storage  # noqa: E402
 # Операция упаковки (пилотная): подетальный контроль комплектности заказа.
 PACK_OP = "Упаковка раскроя"
 
+# Операция опыта с камерой над укладкой на кромлении (OQ-96), изолированно.
+CAM_OP = "Кромление (камера)"
+
+# Порог разрешения камеры: детали длиннее — вероятный источник потерь (ТЗ 3.1).
+CAM_LARGE_MM = 1600
+
 # GUID детали (как в .xbir/на бирке Базиса): 8-4-4-4-12 hex.
 _GUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
@@ -741,6 +747,123 @@ def create_app(db_path: str | Path = "prod.db") -> Flask:
         finally:
             core.storage.close()
 
+    # --- Опыт с камерой над укладкой (OQ-96) --------------------------------
+
+    @app.post("/api/camera/scan")
+    def api_camera_scan():
+        """
+        Приём распознавания от камеры-агента (пассивная регистрация укладки).
+        Тело: {code, camera_id?, recognized_at?, operation_1c?}. Дедуп по коду
+        (многократный проход — один раз), автозакрытие, сигнал о незакрытом
+        предыдущем заказе. Пишет ТОЛЬКО в camera_regs — в 1С не идёт.
+        """
+        data = request.get_json(force=True, silent=True) or {}
+        code = str(data.get("code", "")).strip()
+        cam = str(data.get("camera_id", ""))
+        rec_at = str(data.get("recognized_at", ""))
+        op = data.get("operation_1c") or CAM_OP
+        if not code:
+            return jsonify({"error": "code обязателен"}), 400
+        core = _core()
+        try:
+            detail = core.storage.get_detail_by_qr(code)
+            if detail is None and _GUID_RE.match(code):
+                detail = core.storage.get_detail_by_uid(code)
+            if detail is None:
+                core.storage.record_camera_reg(None, op, None, code, "unknown",
+                                               cam, rec_at)
+                return jsonify({"status": "unknown"})
+
+            order_num = detail["order_num"]
+            uid = detail["detail_uid"]
+
+            # Сигнал: перешли на другой заказ, а предыдущий не закрыт полностью.
+            signal = None
+            last = core.storage.get_last_camera_order(op)
+            if last is not None and last != order_num:
+                missing = _edged_uids(core, last) - \
+                    core.storage.get_camera_recognized_uids(last, op)
+                if missing:
+                    signal = {"prev_order": last, "missing_count": len(missing)}
+                    core.storage.record_camera_reg(last, op, None, "",
+                                                   "prev_incomplete", cam, rec_at)
+
+            if core.storage.camera_detail_seen(op, uid):
+                status = "duplicate"          # тот же код (др. проход) — не считаем
+            else:
+                status = "accepted"
+            core.storage.record_camera_reg(order_num, op, uid, code, status,
+                                           cam, rec_at)
+
+            planned = _edged_uids(core, order_num)
+            recognized = core.storage.get_camera_recognized_uids(order_num, op)
+            return jsonify({
+                "status": status, "order_num": order_num,
+                "recognized": len(recognized), "planned": len(planned),
+                "order_complete": bool(planned) and planned <= recognized,
+                "signal": signal,
+            })
+        finally:
+            core.storage.close()
+
+    @app.get("/api/camera/report")
+    def api_camera_report():
+        """Сводка опыта камеры: распознавание против плана, потери по причинам."""
+        core = _core()
+        try:
+            op = request.args.get("operation_1c") or CAM_OP
+            regs = core.storage.get_camera_regs(op)
+            unknown = sum(1 for r in regs if r["status"] == "unknown")
+            # задержка регистрации (сек): registered_at - recognized_at
+            import datetime as _dt
+            lat = []
+            for r in regs:
+                if r["status"] == "accepted" and r["recognized_at"]:
+                    try:
+                        lat.append((_dt.datetime.fromisoformat(r["registered_at"])
+                                    - _dt.datetime.fromisoformat(r["recognized_at"])
+                                    ).total_seconds())
+                    except ValueError:
+                        pass
+            orders_with_regs = sorted({r["order_num"] for r in regs
+                                       if r["order_num"] is not None})
+            tot_plan = tot_recog = tot_large_miss = 0
+            per_order = []
+            for num in orders_with_regs:
+                details = {d["detail_uid"]: d
+                           for d in core.storage.get_details_by_order(num)}
+                planned = _edged_uids(core, num)
+                recognized = core.storage.get_camera_recognized_uids(num, op)
+                missing = planned - recognized
+                large_miss = sum(
+                    1 for u in missing
+                    if max(details[u]["length"] or 0,
+                           details[u]["width"] or 0) > CAM_LARGE_MM)
+                tot_plan += len(planned)
+                tot_recog += len(recognized & planned)
+                tot_large_miss += large_miss
+                per_order.append({
+                    "order_num": num, "planned": len(planned),
+                    "recognized": len(recognized & planned),
+                    "missing": len(missing), "large_missing": large_miss,
+                })
+            not_recog = tot_plan - tot_recog
+            return jsonify({
+                "operation": op,
+                "planned_total": tot_plan,
+                "recognized_total": tot_recog,
+                "recognition_pct": round(tot_recog / tot_plan * 100, 1) if tot_plan else 0,
+                "losses": {
+                    "resolution_large": tot_large_miss,        # детали >1600 мм
+                    "overlap_or_light": max(0, not_recog - tot_large_miss),  # разделить вручную
+                },
+                "unknown_reads": unknown,                       # кандидаты в ложные
+                "avg_latency_sec": round(sum(lat) / len(lat), 2) if lat else None,
+                "orders": per_order,
+            })
+        finally:
+            core.storage.close()
+
     return app
 
 
@@ -768,6 +891,15 @@ def _all_operations(core: ProductionCore) -> list[str]:
             if op not in seen:
                 seen.append(op)
     return seen
+
+
+def _edged_uids(core: ProductionCore, order_num: int) -> set[str]:
+    """Детали заказа, проходящие кромление (есть хотя бы одна кромка)."""
+    out: set[str] = set()
+    for d in core.storage.get_details_by_order(order_num):
+        if d["edge_l1"] or d["edge_l2"] or d["edge_w1"] or d["edge_w2"]:
+            out.add(d["detail_uid"])
+    return out
 
 
 def _detail_view(core: ProductionCore, qr_code: str) -> dict | None:

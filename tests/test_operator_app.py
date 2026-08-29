@@ -250,6 +250,63 @@ def test_mark_missing_closes_order_with_shortage(client, app_db):
     assert d2["current"] is None
 
 
+# --- Опыт с камерой (OQ-96) --------------------------------------------------
+
+def _cam(client, code, camera_id="cam1"):
+    return client.post("/api/camera/scan",
+                       json={"code": code, "camera_id": camera_id}).get_json()
+
+
+def test_camera_dedup_multipass_and_autoclose(client, app_db):
+    """
+    Камера: многократный проход детали засчитывается один раз; операция по
+    заказу закрывается, когда распознаны все кромлёные детали. В 1С/факт не пишет.
+    """
+    r1 = _cam(client, qr(UID_PANEL_16))
+    assert r1["status"] == "accepted" and r1["recognized"] == 1
+    r1b = _cam(client, qr(UID_PANEL_16))            # тот же код (др. проход станка)
+    assert r1b["status"] == "duplicate" and r1b["recognized"] == 1
+
+    r2 = _cam(client, qr(UID_SHELF_16))
+    assert r2["status"] == "accepted"
+    assert r2["order_complete"] is True             # обе кромлёные детали видны
+
+    from storage import Storage
+    s = Storage(app_db)
+    try:
+        assert len(s.get_facts_by_order(6564)) == 0  # изоляция: боевой факт пуст
+    finally:
+        s.close()
+
+
+def test_camera_signals_incomplete_previous_order(client, app_db):
+    """Переход на другой заказ при незакрытом текущем → сигнал о недостаче."""
+    from storage import Storage
+    other = "BBBBBBBB-0000-0000-0000-000000000002"
+    s = Storage(app_db)
+    s.upsert_detail({
+        "detail_uid": other, "order_num": 9999, "qr_code": qr(other),
+        "pos_no": "1", "material_name": "ЛДСП", "thickness": 16,
+        "length": 500, "width": 300, "qty": 1,
+        "edge_l1": 0.8, "edge_l2": 0, "edge_w1": 0, "edge_w2": 0,
+        "edge_total_len": 0, "perimeter": 0, "area": 0, "source_file": "",
+    })
+    s.close()
+
+    _cam(client, qr(UID_PANEL_16))                  # 6564: 1 из 2 (неполно)
+    r = _cam(client, qr(other))                     # деталь заказа 9999
+    assert r["signal"] is not None
+    assert r["signal"]["prev_order"] == 6564
+    assert r["signal"]["missing_count"] >= 1
+
+
+def test_camera_report(client):
+    _cam(client, qr(UID_PANEL_16))
+    d = client.get("/api/camera/report").get_json()
+    assert d["planned_total"] >= 2 and d["recognized_total"] >= 1
+    assert "resolution_large" in d["losses"]
+
+
 def test_scan_accepted_and_counter_grows(client, monkeypatch):
     # Гасим окно антидубликата, чтобы проверить рост счётчика по одной детали.
     monkeypatch.setattr(operator_app, "_active_orders", {})
