@@ -1,44 +1,67 @@
 @echo off
-chcp 65001 >nul
 cd /d "%~dp0"
-title Подетальный учёт — локальный запуск
+title Podetal accounting - local launch
 
-echo ======================================================
-echo  Подетальный учёт — локальный запуск (Windows)
-echo ======================================================
+echo ==================================================
+echo  Podetal accounting - local launch
+echo ==================================================
 echo.
 
 where python >nul 2>nul
 if errorlevel 1 (
-  echo [!] Python не найден. Установите Python 3.10+ с python.org
-  echo     и на установке отметьте "Add Python to PATH". Затем запустите снова.
+  echo [!] Python not found. Install Python 3.12 from python.org
+  echo     and check "Add Python to PATH". Then run again.
+  pause
+  exit /b 1
+)
+
+for /f "tokens=2" %%v in ('python --version 2^>^&1') do set PYVER=%%v
+echo Detected Python %PYVER%
+echo %PYVER%| findstr /b "3.12" >nul
+if errorlevel 1 (
+  echo [!] Offline package bundle is built for Python 3.12, found %PYVER%.
+  echo     Install Python 3.12 from python.org ^(Add to PATH^), then run again.
+  echo     ^(3.14 is too new - prebuilt packages are not available.^)
   pause
   exit /b 1
 )
 
 if not exist ".venv\Scripts\python.exe" (
-  echo [1/4] Создаю окружение .venv ...
+  echo [1/3] Creating virtual env .venv ...
   python -m venv .venv
 )
 set PY=.venv\Scripts\python.exe
 
-echo [2/4] Ставлю зависимости ...
-"%PY%" -m pip install --disable-pip-version-check -q -r requirements.txt
-
-echo [3/4] База: участки + оператор + образец заказа ...
-"%PY%" main.py --db prod.db init
-"%PY%" main.py --db prod.db add-operator --name "Тестовый Оператор" --id test_op
-if exist "samples\6564-Spectorg-OOO" (
-  "%PY%" main.py --db prod.db import "samples\6564-Spectorg-OOO"
+echo [2/3] Installing dependencies ...
+if exist "vendor\wheels" (
+  echo    offline mode: from vendor\wheels ^(no internet needed^)
+  "%PY%" -m pip install --no-index --find-links vendor\wheels Flask openpyxl cryptography
+) else (
+  echo    online mode: from PyPI
+  "%PY%" -m pip install --timeout 120 --retries 10 -r requirements.txt
 )
+if errorlevel 1 (
+  echo.
+  echo [!] Dependency install failed - see messages above.
+  echo     If online mode timed out: no internet to PyPI. Use the offline
+  echo     bundle ^(folder vendor\wheels^) with Python 3.12.
+  pause
+  exit /b 1
+)
+
+echo [3/3] Seeding DB: areas + operator + sample order ...
+"%PY%" main.py --db prod.db init
+"%PY%" main.py --db prod.db add-operator --name "Test Operator" --id test_op
+if exist "samples\6564-Spectorg-OOO" "%PY%" main.py --db prod.db import "samples\6564-Spectorg-OOO"
 "%PY%" main.py --db prod.db operators
 
 echo.
-echo [4/4] Запускаю сервер. Адреса напечатаны ниже.
-echo    Реальные данные: в админке (/admin, PIN 0000) укажите локальные пути
-echo    к папке с .xbir и файлу "производственные операции" и нажмите
-echo    "Связать и импортировать". FTP локально не нужен.
-echo    Остановить сервер: закрыть это окно.
+echo ==================================================
+echo  Starting server. Addresses are printed below.
+echo  Operator: /   Dashboard: /packing   Admin: /admin (PIN 0000)
+echo  Open on phone (Android + Chrome), same Wi-Fi.
+echo  Stop: close this window.
+echo ==================================================
 echo.
 
 "%PY%" src\operator_app.py prod.db 5001
