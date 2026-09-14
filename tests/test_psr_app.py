@@ -21,7 +21,8 @@ from src.storage import Storage
 
 @pytest.fixture()
 def client():
-    st = Storage(os.path.join(tempfile.mkdtemp(), "psr.db"))
+    db = os.path.join(tempfile.mkdtemp(), "psr.db")
+    st = Storage(db)
     st.upsert_order_link(8952, "confirmed", order_full_num="ПС00-010109",
                          order_date="2026-08-28", client_name="Хворост")
     st.upsert_detail(dict(detail_uid="D1", order_num=8952, qr_code="D1",
@@ -30,13 +31,16 @@ def client():
                           qty=2, edge_total_len=900.0))
     AreaMeasures(st).set_measure("kromlenie", EDGE_METERS)
 
+    st.close()
+    # Приложение собирается ТАК ЖЕ, как в бою: соединение с БД
+    # открывается на каждый запрос по пути DB_PATH (соглашение ядра).
     app = Flask(__name__, template_folder="../src/templates")
-    app.config["STORAGE"] = st
+    app.config["DB_PATH"] = db
     app.register_blueprint(psr)
     c = app.test_client()
-    c.storage = st
+    c.storage = Storage(db)
     yield c
-    st.close()
+    c.storage.close()
 
 
 # ----------------------------------------------------------------------

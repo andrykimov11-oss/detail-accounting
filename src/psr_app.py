@@ -21,6 +21,13 @@
                       участкам, справочный состав заказа из .xbir,
                       накопленная статистика.
 
+СОЕДИНЕНИЕ С БД — НА КАЖДЫЙ ЗАПРОС
+    Так же, как в `operator_app`: Storage открывается заново на каждый
+    запрос по пути из config["DB_PATH"]. Общее соединение sqlite между
+    потоками dev-сервера небезопасно, и ядро это соглашение уже приняло.
+    Первая редакция этого модуля держала одно соединение в config —
+    ошибка найдена при подключении экранов, до запуска.
+
 ЧЕГО ЗДЕСЬ НЕТ
     Прав по ролям (SR-96 — SR-100) и входа по бейджу. Это следующая
     задача шага 1; пока оператор называется полем на экране. Делать
@@ -36,6 +43,7 @@ from flask import Blueprint, jsonify, render_template, request
 sys.path.insert(0, str(Path(__file__).parent))
 
 from area_measures import AreaMeasures, MeasureNotSet  # noqa: E402
+from storage import Storage  # noqa: E402
 from order_registration import (  # noqa: E402
     OrderAlreadyClosed,
     OrderNotOpen,
@@ -57,6 +65,12 @@ AREA_NAMES = {
     "sborka": "Сборка",
     "sklad": "Склад готовой продукции",
 }
+
+
+def _storage():
+    """Свежий Storage на текущий запрос — соглашение ядра."""
+    from flask import current_app
+    return Storage(current_app.config["DB_PATH"])
 
 
 def _services(storage):
@@ -104,8 +118,7 @@ def _order_card(storage, measures, order_num: int, area_id: str) -> dict:
 # ----------------------------------------------------------------------
 @psr.route("/operator")
 def operator_screen():
-    from flask import current_app
-    st = current_app.config["STORAGE"]
+    st = _storage()
     area_id = request.args.get("area", "kromlenie")
     reg, _, measures = _services(st)
     open_sessions = [
@@ -129,8 +142,7 @@ def api_scan():
     Оператору не надо помнить, какую кнопку нажать: он делает то же
     движение, что и всегда, а решение принимает система по состоянию.
     """
-    from flask import current_app
-    st = current_app.config["STORAGE"]
+    st = _storage()
     data = request.get_json(silent=True) or {}
     raw = data.get("code", "")
     area_id = data.get("area", "kromlenie")
@@ -157,8 +169,7 @@ def api_scan():
 
 @psr.route("/api/close", methods=["POST"])
 def api_close():
-    from flask import current_app
-    st = current_app.config["STORAGE"]
+    st = _storage()
     data = request.get_json(silent=True) or {}
     reg, _, _ = _services(st)
     try:
@@ -186,8 +197,7 @@ def chief_screen():
     Нормативов и подсветки здесь НЕТ — они появляются на шаге 2,
     когда накопится медиана за 30 смен.
     """
-    from flask import current_app
-    st = current_app.config["STORAGE"]
+    st = _storage()
     reg, _, measures = _services(st)
 
     areas = []
@@ -213,8 +223,7 @@ def chief_screen():
 @psr.route("/api/order/<int:order_num>")
 def api_order(order_num: int):
     """Состав заказа и его путь по участкам — для разбора начальником цеха."""
-    from flask import current_app
-    st = current_app.config["STORAGE"]
+    st = _storage()
     reg, _, measures = _services(st)
     history = [
         {"area": AREA_NAMES.get(s.area_id, s.area_id),
