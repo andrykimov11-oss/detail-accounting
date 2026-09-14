@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ area_name }} — отметка заказа</title>
+<style>
+ :root { --line:#d8d8d8; --ink:#1a1a1a; --ok:#0a7a3d; --warn:#8a5a00; --err:#a11; }
+ body { font: 17px/1.5 system-ui, sans-serif; color:var(--ink); margin:0; padding:16px;
+        max-width:760px; }
+ h1 { font-size:22px; margin:0 0 4px; }
+ .area { color:#666; margin-bottom:18px; }
+ .scan { display:flex; gap:8px; margin-bottom:20px; }
+ .scan input { flex:1; font-size:20px; padding:12px; border:2px solid var(--line);
+               border-radius:6px; }
+ .scan input:focus { outline:none; border-color:#333; }
+ button { font-size:17px; padding:12px 18px; border:1px solid var(--line);
+          border-radius:6px; background:#fff; cursor:pointer; }
+ button.primary { background:#1a1a1a; color:#fff; border-color:#1a1a1a; }
+ .msg { padding:12px; border-radius:6px; margin-bottom:16px; display:none; }
+ .msg.ok  { background:#eaf6ee; color:var(--ok); display:block; }
+ .msg.err { background:#fdecec; color:var(--err); display:block; }
+ .card { border:1px solid var(--line); border-radius:8px; padding:14px;
+         margin-bottom:12px; }
+ .card h2 { font-size:19px; margin:0 0 6px; }
+ .meta { color:#555; font-size:15px; }
+ .ref { margin-top:8px; padding-top:8px; border-top:1px dashed var(--line);
+        font-size:15px; color:#444; }
+ .ref b { color:var(--ink); }
+ .note { color:var(--warn); font-size:14px; }
+ .none { color:#777; font-style:italic; }
+</style>
+</head>
+<body>
+<h1>Отметка заказа</h1>
+<div class="area">Участок: <b>{{ area_name }}</b></div>
+
+<div class="scan">
+  <input id="code" placeholder="Отсканируйте код с бланка заказа" autofocus>
+  <button class="primary" onclick="scan()">Готово</button>
+</div>
+<div id="msg" class="msg"></div>
+
+<h2 style="font-size:18px">В работе сейчас</h2>
+{% if not open_sessions %}
+  <p class="none">Ничего не взято в работу.</p>
+{% endif %}
+{% for s in open_sessions %}
+<div class="card">
+  <h2>Заказ {{ s.order_num }}{% if s.client %} — {{ s.client }}{% endif %}</h2>
+  <div class="meta">Взят в работу: {{ s.opened_at.replace('T', ' ') }}</div>
+  <div class="ref">
+    Справочно из спецификации:
+    <b>{{ s.unique_details }}</b> уникальных деталей,
+    <b>{{ s.total_items }}</b> штук всего
+    {% if s.measure_value is not none %}
+      · {{ s.measure_name }}: <b>{{ s.measure_value }}</b>
+    {% elif s.measure_note %}
+      <div class="note">{{ s.measure_note }}</div>
+    {% endif %}
+  </div>
+  <p><button onclick="close_order({{ s.order_num }})">Закончил этот заказ</button></p>
+</div>
+{% endfor %}
+
+<script>
+const AREA = {{ area_id|tojson }};
+function show(text, ok) {
+  const m = document.getElementById('msg');
+  m.className = 'msg ' + (ok ? 'ok' : 'err');
+  m.textContent = text;
+}
+async function post(url, body) {
+  const r = await fetch(url, {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  return r.json();
+}
+async function scan() {
+  const el = document.getElementById('code');
+  const code = el.value.trim();
+  if (!code) return;
+  const r = await post('/psr/api/scan', {code, area: AREA});
+  show(r.ok ? r.message : r.error, r.ok);
+  el.value = ''; el.focus();
+  if (r.ok) setTimeout(() => location.reload(), 600);
+}
+async function close_order(order) {
+  const r = await post('/psr/api/close', {order, area: AREA});
+  if (r.ok) {
+    let t = r.message + ' — ' + r.duration_minutes + ' мин';
+    if (r.measure_value !== null) t += ', ' + r.measure_name + ': ' + r.measure_value;
+    show(t, true);
+    setTimeout(() => location.reload(), 900);
+  } else show(r.error, false);
+}
+document.getElementById('code').addEventListener('keydown', e => {
+  if (e.key === 'Enter') scan();   // сканер-клавиатура шлёт Enter сам
+});
+</script>
+</body>
+</html>

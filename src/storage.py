@@ -42,6 +42,14 @@ CREATE TABLE IF NOT EXISTS details (
     edge_total_len REAL DEFAULT 0,
     perimeter     REAL DEFAULT 0,
     area          REAL DEFAULT 0,
+    -- Поля, нужные натуральным измерителям участков (SR-26г — SR-26е).
+    -- Парсер читал их и раньше, но до базы они не доходили: подетальному
+    -- учёту они были не нужны, нормированию участков — необходимы.
+    product_code  TEXT DEFAULT '',        -- «Обозначение изделия» → сборка
+    grooves       INTEGER DEFAULT 0,      -- пазы → фрезерование
+    drill_total   INTEGER DEFAULT 0,      -- отверстия → присадка
+    plate_no      INTEGER DEFAULT 0,      -- номер плиты → раскрой
+    map_no        INTEGER DEFAULT 0,      -- номер карты раскроя
     source_file   TEXT,
     imported_at   TEXT NOT NULL,
     PRIMARY KEY (detail_uid, order_num)
@@ -146,6 +154,64 @@ CREATE TABLE IF NOT EXISTS facts (
     PRIMARY KEY (operation_1c, detail_uid)
 );
 
+-- Натуральный измеритель участка (SR-26а).
+-- area_id — ПЕРВИЧНЫЙ КЛЮЧ: «ровно один измеритель на участок» есть
+-- свойство схемы, а не дисциплины заполняющего. Второй строки для
+-- участка физически не существует.
+CREATE TABLE IF NOT EXISTS area_measures (
+    area_id      TEXT PRIMARY KEY,
+    measure_code TEXT NOT NULL,
+    measure_name TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
+-- ПОЗАКАЗНАЯ РЕГИСТРАЦИЯ (первый этап ПСР, шаг 1).
+--
+-- Отдельная таблица, а не запись в facts: facts накапливает ПОДЕТАЛЬНЫЙ
+-- факт (operation_1c + detail_uid), здесь же единица — ЗАКАЗ на участке.
+-- Смешивать их нельзя: на шаге 5 участки переходят на подетальный учёт
+-- по одному, и в один период сосуществуют обе единицы (PLAN-001 §8.2).
+--
+-- Требования: SR-20 (открытие), SR-20а (закрытие), SR-11а (момент
+-- окончания отдельно от момента отметки), SR-13 (ретроспективность),
+-- SR-15 (отложенная отправка), SR-115 (отказ в повторном закрытии).
+CREATE TABLE IF NOT EXISTS order_area_sessions (
+    session_id    TEXT PRIMARY KEY,
+    order_num     INTEGER NOT NULL,
+    area_id       TEXT NOT NULL,
+    operator_id   TEXT NOT NULL,
+
+    -- SR-20: открытие. Задаёт границу партии.
+    opened_at     TEXT NOT NULL,            -- момент СОБЫТИЯ открытия
+    opened_mark_at TEXT NOT NULL,           -- момент ПОСТАНОВКИ отметки
+
+    -- SR-20а: закрытие. NULL, пока заказ на участке не закрыт.
+    closed_at     TEXT,                     -- момент окончания работы
+    closed_mark_at TEXT,                    -- момент постановки отметки
+
+    -- SR-11а: совпадение дат события и отметки есть содержание SR-40;
+    -- расхождение есть содержание SR-13. Поля разные ИМЕННО поэтому.
+    retro_open    INTEGER NOT NULL DEFAULT 0,  -- SR-13 у открытия
+    retro_close   INTEGER NOT NULL DEFAULT 0,  -- SR-13 у закрытия
+
+    -- SR-15: отметка накоплена на устройстве без сети.
+    deferred      INTEGER NOT NULL DEFAULT 0,
+    received_at   TEXT,                     -- момент приёма сервером
+
+    -- Натуральный измеритель участка на момент закрытия (SR-26а).
+    -- Берётся из спецификации ДО начала работы и здесь фиксируется,
+    -- чтобы выработка не менялась задним числом при правке справочника.
+    measure_name  TEXT,
+    measure_value REAL,
+
+    note          TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_oas_order_area
+    ON order_area_sessions (order_num, area_id);
+CREATE INDEX IF NOT EXISTS idx_oas_open
+    ON order_area_sessions (area_id, closed_at);
+
 -- Регистрации камеры (опыт OQ-96): пассивное распознавание бирок над местом
 -- укладки. ИЗОЛИРОВАНО от facts/1С — это отдельный опыт, а не боевой факт.
 CREATE TABLE IF NOT EXISTS camera_regs (
@@ -212,6 +278,15 @@ class Storage:
             self._conn.execute("ALTER TABLE order_links ADD COLUMN order_date TEXT")
         if "deadline" not in cols:
             self._conn.execute("ALTER TABLE order_links ADD COLUMN deadline TEXT")
+        dcols = {r["name"] for r in
+                 self._conn.execute("PRAGMA table_info(details)").fetchall()}
+        for col, ddl in (("product_code", "TEXT DEFAULT ''"),
+                         ("grooves", "INTEGER DEFAULT 0"),
+                         ("drill_total", "INTEGER DEFAULT 0"),
+                         ("plate_no", "INTEGER DEFAULT 0"),
+                         ("map_no", "INTEGER DEFAULT 0")):
+            if col not in dcols:
+                self._conn.execute(f"ALTER TABLE details ADD COLUMN {col} {ddl}")
         if "route_flags" not in cols:
             self._conn.execute("ALTER TABLE order_links ADD COLUMN route_flags TEXT")
 
@@ -228,8 +303,9 @@ class Storage:
             INSERT INTO details (detail_uid, order_num, qr_code, pos_no,
                 material_name, thickness, length, width, qty,
                 edge_l1, edge_l2, edge_w1, edge_w2, edge_total_len,
-                perimeter, area, source_file, imported_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                perimeter, area, product_code, grooves, drill_total,
+                plate_no, map_no, source_file, imported_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(detail_uid, order_num) DO UPDATE SET
                 qr_code=excluded.qr_code, qty=excluded.qty,
                 length=excluded.length, width=excluded.width,
@@ -241,7 +317,13 @@ class Storage:
             d.get("edge_l1", 0), d.get("edge_l2", 0),
             d.get("edge_w1", 0), d.get("edge_w2", 0),
             d.get("edge_total_len", 0), d.get("perimeter", 0),
-            d.get("area", 0), d.get("source_file", ""),
+            d.get("area", 0),
+            d.get("product_code", ""), d.get("grooves", 0),
+            d.get("drill_total", 0) or (d.get("drill_through", 0)
+                                        + d.get("drill_blind", 0)
+                                        + d.get("drill_end", 0)),
+            d.get("plate_no", 0), d.get("map_no", 0),
+            d.get("source_file", ""),
             datetime.now().isoformat(),
         ))
         self._conn.commit()
@@ -315,6 +397,117 @@ class Storage:
             (order_num,)).fetchall()
 
     # --- Регистрации камеры (опыт OQ-96) -------------------------------------
+
+    # ------------------------------------------------------------------
+    # Натуральные измерители участков (SR-26а)
+    # ------------------------------------------------------------------
+    def set_area_measure(self, area_id: str, measure_code: str,
+                         measure_name: str) -> None:
+        """Задать измеритель участка; повторный вызов заменяет прежний."""
+        self._conn.execute(
+            """INSERT INTO area_measures (area_id, measure_code,
+                                          measure_name, updated_at)
+               VALUES (?,?,?,?)
+               ON CONFLICT(area_id) DO UPDATE SET
+                   measure_code=excluded.measure_code,
+                   measure_name=excluded.measure_name,
+                   updated_at=excluded.updated_at""",
+            (area_id, measure_code, measure_name, datetime.now().isoformat()))
+        self._conn.commit()
+
+    def get_area_measure(self, area_id: str):
+        return self._conn.execute(
+            "SELECT * FROM area_measures WHERE area_id=?", (area_id,)).fetchone()
+
+    def get_area_measures(self) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM area_measures ORDER BY area_id").fetchall()
+
+    # ------------------------------------------------------------------
+    # Позаказная регистрация (шаг 1 ПСР): SR-20, SR-20а, SR-115
+    # ------------------------------------------------------------------
+    def insert_order_session(self, s) -> None:
+        """Записать открытие заказа на участке (SR-20)."""
+        self._conn.execute(
+            """INSERT INTO order_area_sessions
+               (session_id, order_num, area_id, operator_id,
+                opened_at, opened_mark_at, retro_open, deferred,
+                received_at, note)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (s.session_id, s.order_num, s.area_id, s.operator_id,
+             s.opened_at, s.opened_mark_at, int(s.retro_open),
+             int(s.deferred), s.received_at, s.note),
+        )
+        self._conn.commit()
+
+    def close_order_session(self, session_id: str, closed_at: str,
+                            closed_mark_at: str, retro_close: int,
+                            operator_id: str,
+                            measure_name: str | None = None,
+                            measure_value: float | None = None,
+                            deferred: int = 0,
+                            received_at: str | None = None) -> None:
+        """Записать закрытие заказа на участке (SR-20а)."""
+        self._conn.execute(
+            """UPDATE order_area_sessions
+                  SET closed_at=?, closed_mark_at=?, retro_close=?,
+                      operator_id=?, measure_name=?, measure_value=?,
+                      deferred=MAX(deferred, ?), received_at=COALESCE(?, received_at)
+                WHERE session_id=?""",
+            (closed_at, closed_mark_at, retro_close, operator_id,
+             measure_name, measure_value, deferred, received_at, session_id),
+        )
+        self._conn.commit()
+
+    def append_session_note(self, session_id: str, note: str) -> None:
+        """Дописать примечание к сессии, не затирая прежнее."""
+        self._conn.execute(
+            """UPDATE order_area_sessions
+                  SET note = TRIM(COALESCE(note,'') || ' ' || ?)
+                WHERE session_id=?""", (note, session_id))
+        self._conn.commit()
+
+    def get_order_session(self, session_id: str):
+        return self._conn.execute(
+            "SELECT * FROM order_area_sessions WHERE session_id=?",
+            (session_id,)).fetchone()
+
+    def get_open_order_session(self, order_num: int, area_id: str):
+        """Открытая, ещё не закрытая сессия заказа на участке."""
+        return self._conn.execute(
+            """SELECT * FROM order_area_sessions
+                WHERE order_num=? AND area_id=? AND closed_at IS NULL
+                ORDER BY opened_at DESC LIMIT 1""",
+            (order_num, area_id)).fetchone()
+
+    def get_closed_order_session(self, order_num: int, area_id: str):
+        """Закрытая сессия заказа на участке — основание отказа по SR-115."""
+        return self._conn.execute(
+            """SELECT * FROM order_area_sessions
+                WHERE order_num=? AND area_id=? AND closed_at IS NOT NULL
+                ORDER BY closed_at DESC LIMIT 1""",
+            (order_num, area_id)).fetchone()
+
+    def get_open_sessions(self, area_id: str) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            """SELECT * FROM order_area_sessions
+                WHERE area_id=? AND closed_at IS NULL
+                ORDER BY opened_at, rowid""", (area_id,)).fetchall()
+
+    def get_order_sessions(self, order_num: int) -> list[sqlite3.Row]:
+        """
+        Путь заказа по участкам — основа карты потока (шаг 2).
+
+        Сортировка по моменту открытия И ПО ПОРЯДКУ ЗАПИСИ: момент
+        хранится с точностью до секунды, и два открытия в одну секунду
+        дали бы неопределённый порядок. На раскрое и кромлении такое
+        реально: оператор закрывает один заказ и тут же берёт следующий.
+        Найдено тестом пути заказа, а не в цехе.
+        """
+        return self._conn.execute(
+            """SELECT * FROM order_area_sessions
+                WHERE order_num=? ORDER BY opened_at, rowid""",
+            (order_num,)).fetchall()
 
     def record_camera_reg(self, order_num, operation_1c: str, detail_uid,
                           code: str, status: str, camera_id: str = "",
@@ -489,6 +682,22 @@ class Storage:
              WHERE order_num=?
         """, (order_full_num, confirmed_by, datetime.now().isoformat(), order_num))
         self._conn.commit()
+
+    def find_order_by_doc(self, doc_num: str, doc_date: str):
+        """
+        Номер заказа БАЗИС по паре «документ 1С + дата» (SETUP-002 §7а).
+
+        Пара, а не один номер: номера документов 1С повторяются между
+        годами, и один номер адресует несколько заказов.
+        Дата в order_links может храниться с временем — сравниваем по
+        первым десяти знакам, то есть по дате.
+        """
+        row = self._conn.execute(
+            """SELECT order_num FROM order_links
+                WHERE order_full_num = ?
+                  AND substr(COALESCE(order_date,''), 1, 10) = ?
+                LIMIT 1""", (doc_num, doc_date)).fetchone()
+        return row["order_num"] if row else None
 
     def is_order_linked(self, order_num: int) -> bool:
         """
