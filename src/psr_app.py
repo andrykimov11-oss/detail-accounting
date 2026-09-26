@@ -28,10 +28,18 @@
     Первая редакция этого модуля держала одно соединение в config —
     ошибка найдена при подключении экранов, до запуска.
 
+ПРАВА И ВХОД — ЕСТЬ (SR-96 — SR-100)
+    Оператор больше не поле на экране: он входит сканом личного бейджа
+    (SR-97), и каждое действие проверяется по справочнику прав (SR-96).
+    Проверка идёт через `access.require`, который тем же вызовом
+    записывает автора привилегированного действия (SR-99).
+
+    В выгрузки и отчёты уходит КОД исполнителя, не ФИО (SR-100). Имя
+    видно только на экране цеха: «ИСП-0147» у станка никого не узнаёт.
+
 ЧЕГО ЗДЕСЬ НЕТ
-    Прав по ролям (SR-96 — SR-100) и входа по бейджу. Это следующая
-    задача шага 1; пока оператор называется полем на экране. Делать
-    вид, что права есть, нельзя — поэтому их нет явно, а не наполовину.
+    Бригадной отметки (SR-98) — она относится к событию операции и
+    живёт в подетальном учёте, а не в позаказном рабочем месте.
 """
 from __future__ import annotations
 
@@ -42,6 +50,14 @@ from flask import Blueprint, jsonify, render_template, request
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from access import (  # noqa: E402
+    ACT_ORDER_CLOSE,
+    ACT_ORDER_OPEN,
+    Access,
+    AccessDenied,
+    BadgeNotRecognized,
+    PersonInactive,
+)
 from area_measures import AreaMeasures, MeasureNotSet  # noqa: E402
 from storage import Storage  # noqa: E402
 from order_registration import (  # noqa: E402
@@ -53,6 +69,12 @@ from order_scan import (  # noqa: E402
     OrderNotInShiftTask,
     OrderScanResolver,
     ScanNotRecognized,
+)
+from raskroy_nav import (  # noqa: E402
+    BazisRootNotSet,
+    LinkNotConfirmed,
+    OrderFolderNotFound,
+    RaskroyNavigator,
 )
 
 psr = Blueprint("psr", __name__, url_prefix="/psr")
@@ -78,6 +100,54 @@ def _services(storage):
     return (OrderRegistration(storage, measures=measures),
             OrderScanResolver(storage),
             measures)
+
+
+def _access(storage) -> Access:
+    return Access(storage)
+
+
+RASKROY = "raskroy"
+
+
+def _shift_task_scope(storage):
+    """
+    Область поиска заказа — из действующего задания, а не от клиента.
+
+    SR-108 требует искать В ПРЕДЕЛАХ сменного задания. Первая редакция
+    брала список заказов из тела запроса: экран мог прислать пустую
+    область, и заказ находился бы по всему потоку из 12 054. Требование
+    выполнялось бы ровно до первого невежливого клиента.
+
+    Пока выгрузки задания нет (пункт 0.8 шага 0), задания в базе нет
+    тоже, и область не ограничивается — но это видно по ответу поля
+    `task_id`, а не спрятано.
+    """
+    task = storage.active_shift_task()
+    if task is None:
+        return None, ""
+    return storage.shift_task_orders(task["task_id"]), task["task_id"]
+
+
+def _nav_payload(storage, order_num: int, task_id: str) -> dict:
+    """Навигация раскроя: декоры, листы, нужно ли подтверждение."""
+    try:
+        return RaskroyNavigator(storage).navigate(order_num,
+                                                  task_id).to_report()
+    except (OrderFolderNotFound, BazisRootNotSet) as exc:
+        return {"order_num": order_num, "error": str(exc)}
+
+
+def _current(storage, data=None):
+    """
+    Кто сейчас работает. Токен берётся из заголовка либо из тела запроса.
+
+    Возвращает Session либо None. Решение о доступе принимает не эта
+    функция, а `access.require`: здесь только опознание, там — право.
+    """
+    token = request.headers.get("X-PSR-Token") or \
+        ((data or {}).get("token") if isinstance(data, dict) else None) or \
+        request.args.get("token", "")
+    return _access(storage).session(token) if token else None
 
 
 def _order_card(storage, measures, order_num: int, area_id: str) -> dict:
@@ -146,24 +216,38 @@ def api_scan():
     data = request.get_json(silent=True) or {}
     raw = data.get("code", "")
     area_id = data.get("area", "kromlenie")
-    operator_id = data.get("operator", "")
+
+    # Кто отмечает — определяется входом по бейджу, а не полем формы.
+    # Прежняя редакция брала `operator` из тела запроса: кто угодно мог
+    # назваться кем угодно, и отметка не значила ничего (SR-96, SR-97).
+    try:
+        person = _access(st).require(_current(st, data), ACT_ORDER_OPEN)
+    except AccessDenied as exc:
+        return jsonify(ok=False, error=str(exc)), 200
+    operator_id = person.person_code
 
     reg, resolver, measures = _services(st)
+    scope, task_id = _shift_task_scope(st)
     try:
-        order_num = resolver.resolve(raw, area_id,
-                                     shift_task=data.get("shift_task"))
+        order_num = resolver.resolve(raw, area_id, shift_task=scope)
     except (ScanNotRecognized, OrderNotInShiftTask) as exc:
         return jsonify(ok=False, error=str(exc)), 200
 
     existing = st.get_open_order_session(order_num, area_id)
     card = _order_card(st, measures, order_num, area_id)
+
+    # На раскрое тот же скан даёт сверх отметки навигацию: декоры,
+    # число листов и вопрос о подтверждении (CHG-001). На прочих
+    # участках навигации нет — там программ станка не существует.
+    nav = _nav_payload(st, order_num, task_id) if area_id == RASKROY else None
+
     if existing is None:
         s = reg.open_order(order_num, area_id, operator_id)
-        return jsonify(ok=True, action="opened", order=card,
-                       session_id=s.session_id,
+        return jsonify(ok=True, action="opened", order=card, nav=nav,
+                       task_id=task_id, session_id=s.session_id,
                        message=f"Заказ {order_num} взят в работу")
-    return jsonify(ok=True, action="already_open", order=card,
-                   session_id=existing["session_id"],
+    return jsonify(ok=True, action="already_open", order=card, nav=nav,
+                   task_id=task_id, session_id=existing["session_id"],
                    message=f"Заказ {order_num} уже в работе — закончить?")
 
 
@@ -171,10 +255,14 @@ def api_scan():
 def api_close():
     st = _storage()
     data = request.get_json(silent=True) or {}
+    try:
+        person = _access(st).require(_current(st, data), ACT_ORDER_CLOSE)
+    except AccessDenied as exc:
+        return jsonify(ok=False, error=str(exc)), 200
     reg, _, _ = _services(st)
     try:
         s = reg.close_order(int(data["order"]), data["area"],
-                            operator_id=data.get("operator"))
+                            operator_id=person.person_code)
     except (OrderAlreadyClosed, OrderNotOpen) as exc:
         return jsonify(ok=False, error=str(exc)), 200
     return jsonify(ok=True,
@@ -182,6 +270,89 @@ def api_close():
                    measure_name=s.measure_name,
                    measure_value=s.measure_value,
                    message=f"Заказ {s.order_num} закончен")
+
+
+@psr.route("/api/login", methods=["POST"])
+def api_login():
+    """
+    Вход по бейджу (SR-97). Пароль не запрашивается — его не существует.
+
+    Экран отвечает кодом и именем: имя нужно человеку, чтобы убедиться,
+    что вошёл он, а не сосед по смене. Наружу из системы уходит только
+    код (SR-100).
+    """
+    st = _storage()
+    data = request.get_json(silent=True) or {}
+    try:
+        s = _access(st).login_by_badge(data.get("badge", ""),
+                                       data.get("area", ""))
+    except (BadgeNotRecognized, PersonInactive) as exc:
+        return jsonify(ok=False, error=str(exc)), 200
+    return jsonify(ok=True, token=s.token,
+                   person_code=s.person.person_code,
+                   person_name=s.person.full_name,
+                   role=s.person.role, role_name=s.person.role_name)
+
+
+@psr.route("/api/confirm", methods=["POST"])
+def api_confirm():
+    """
+    Подтверждение соответствия декоров и числа листов (SR-111, SR-113).
+
+    Подтверждает ОПЕРАТОР, а не экран: сверяет то, что на бумаге, с тем,
+    что физически привезли. Поэтому право проверяется, а запись несёт
+    его код и момент.
+    """
+    st = _storage()
+    data = request.get_json(silent=True) or {}
+    try:
+        person = _access(st).require(_current(st, data), ACT_ORDER_OPEN)
+    except AccessDenied as exc:
+        return jsonify(ok=False, error=str(exc)), 200
+    nav = RaskroyNavigator(st)
+    order_num = int(data["order"])
+    if data.get("revoke"):
+        nav.revoke(order_num, person.person_code, data.get("note", ""))
+        return jsonify(ok=True, confirmed=False,
+                       message=f"Подтверждение по заказу {order_num} отозвано")
+    nav.confirm(order_num, person.person_code, data.get("note", ""))
+    return jsonify(ok=True, confirmed=True,
+                   message=f"Заказ {order_num} подтверждён")
+
+
+@psr.route("/api/prepare", methods=["POST"])
+def api_prepare():
+    """
+    Подготовить рабочую папку станка (SR-114).
+
+    Копирование, а не запуск: на рабочем месте оператора ничего не
+    устанавливается (решение A-09а). Оператор открывает программу сам —
+    просто она уже лежит там, где надо.
+    """
+    st = _storage()
+    data = request.get_json(silent=True) or {}
+    try:
+        _access(st).require(_current(st, data), ACT_ORDER_OPEN)
+    except AccessDenied as exc:
+        return jsonify(ok=False, error=str(exc)), 200
+    _, task_id = _shift_task_scope(st)
+    try:
+        copied = RaskroyNavigator(st).prepare_machine_folder(
+            int(data["order"]), decor_name=data.get("decor", ""),
+            task_id=task_id)
+    except (LinkNotConfirmed, OrderFolderNotFound, BazisRootNotSet) as exc:
+        return jsonify(ok=False, error=str(exc)), 200
+    # Наружу — только счёт: в путях фамилия клиента (SR-100).
+    return jsonify(ok=True, programs=len(copied),
+                   message=f"Программы готовы: {len(copied)} файлов")
+
+
+@psr.route("/api/logout", methods=["POST"])
+def api_logout():
+    st = _storage()
+    data = request.get_json(silent=True) or {}
+    _access(st).logout(data.get("token", ""))
+    return jsonify(ok=True)
 
 
 # ----------------------------------------------------------------------

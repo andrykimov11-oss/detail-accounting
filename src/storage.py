@@ -212,6 +212,130 @@ CREATE INDEX IF NOT EXISTS idx_oas_order_area
 CREATE INDEX IF NOT EXISTS idx_oas_open
     ON order_area_sessions (area_id, closed_at);
 
+-- Исполнители: код наружу, ФИО внутрь (SR-100, находка CF-421).
+--
+-- ПОЧЕМУ ОТДЕЛЬНО ОТ operators
+--     Таблица `operators` смежного направления держит `operator_id`,
+--     порождённый ТРАНСЛИТЕРАЦИЕЙ ФИО, — то есть обратимую запись имени,
+--     а не код. На него опирается накопленный факт, и трогать его нельзя.
+--     Здесь заводится непрозрачный `person_code` вида ИСП-0001; связь с
+--     прежним ключом хранится полем `operator_id`, чтобы факт не потерялся.
+--
+--     ЭТА ТАБЛИЦА ЕСТЬ ТА САМАЯ «таблица соответствия кодов и ФИО,
+--     хранимая вне выгрузок», о которой говорит SR-100. Ни один отчёт и
+--     ни одна выгрузка её не читают.
+CREATE TABLE IF NOT EXISTS persons (
+    person_code  TEXT PRIMARY KEY,   -- ИСП-0001: непрозрачный, наружу
+    full_name    TEXT NOT NULL,      -- только для экрана цеха, не в выгрузки
+    role         TEXT NOT NULL,
+    badge_id     TEXT,               -- код личного бейджа (SR-97)
+    operator_id  TEXT,               -- прежний ключ смежного направления
+    active       INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_persons_badge
+    ON persons (badge_id) WHERE badge_id IS NOT NULL AND badge_id <> '';
+
+-- Права ролей (SR-96). Справочник, а не код: технолог меняет строки,
+-- программист не участвует. Умолчания «разрешено» нет — незаполненная
+-- таблица означает «ничего никому», и это видно первым же отказом.
+CREATE TABLE IF NOT EXISTS role_permissions (
+    role    TEXT NOT NULL,
+    action  TEXT NOT NULL,
+    allowed INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (role, action)
+);
+
+-- Сессии входа по бейджу (SR-97). Пароля нет и хеша пароля нет:
+-- хранить нечего, потому что нечего и спрашивать.
+CREATE TABLE IF NOT EXISTS access_sessions (
+    token        TEXT PRIMARY KEY,
+    person_code  TEXT NOT NULL,
+    area_id      TEXT,
+    opened_at    TEXT NOT NULL,
+    closed_at    TEXT
+);
+
+-- Журнал действий, требующих авторства (SR-99): изменение справочника,
+-- норматива, правила запуска, ретроспективная отметка, переадресация
+-- переделки (D-216). Пишется тем же вызовом, что и проверка права, —
+-- иначе однажды запись забудут, и требование станет выполняться через раз.
+CREATE TABLE IF NOT EXISTS privileged_actions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_code  TEXT NOT NULL,
+    role         TEXT NOT NULL,
+    action       TEXT NOT NULL,
+    acted_at     TEXT NOT NULL,
+    note         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_privileged_action
+    ON privileged_actions (action, acted_at);
+
+-- Выдача кодов исполнителей: только вперёд.
+--
+-- Отдельная таблица, а не MAX(person_code) по `persons`. Первая редакция
+-- считала по максимуму существующих строк, и удаление последнего
+-- исполнителя возвращало его код следующему человеку: в старых отчётах
+-- один код означал бы двоих. Поймано тестом, а не рассуждением —
+-- докстрока уже утверждала невозобновляемость, которой в коде не было.
+--
+-- AUTOINCREMENT здесь не украшение: без него sqlite переиспользует
+-- освободившийся rowid ровно так же.
+CREATE TABLE IF NOT EXISTS person_code_seq (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    issued_at TEXT NOT NULL
+);
+
+-- Сменное задание 1С на выдачу материала по участку раскроя (SR-109).
+--
+-- ПОЧЕМУ ЭТО НЕ «ЗАДАНИЕ СИСТЕМЫ»
+--     Задание 1С покрывает только выдачу материала на раскрой: ни
+--     натуральных показателей по шести участкам, ни плана-факта, ни
+--     переноса в нём нет. Задание системы появляется на шаге 3. Здесь
+--     задание 1С служит ОБЛАСТЬЮ ПОИСКА (SR-108) и источником числа
+--     листов по декору (SR-112).
+CREATE TABLE IF NOT EXISTS shift_tasks (
+    task_id    TEXT PRIMARY KEY,     -- «25.08/1»
+    task_date  TEXT NOT NULL,
+    warehouse  TEXT,
+    loaded_at  TEXT NOT NULL
+);
+
+-- Строки задания. Порядковый номер обязателен: он задаёт
+-- последовательность комплектования пачки листов (SR-109).
+CREATE TABLE IF NOT EXISTS shift_task_rows (
+    task_id       TEXT NOT NULL,
+    row_no        INTEGER NOT NULL,   -- порядковый номер строки задания
+    order_num     INTEGER,            -- заказ БАЗИС, через связку
+    doc_num       TEXT NOT NULL,      -- номер документа 1С
+    doc_date      TEXT NOT NULL,      -- дата документа 1С
+    decor         TEXT NOT NULL,      -- наименование декора
+    sheets        INTEGER NOT NULL,   -- ЦЕЛОЕ число листов (SR-112)
+    PRIMARY KEY (task_id, row_no, decor)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stask_order
+    ON shift_task_rows (order_num);
+
+-- Подтверждение связки оператором (SR-113).
+--
+-- Таблица ТОЛЬКО ПОПОЛНЯЕТСЯ: подтверждение и отзыв — два события, а не
+-- правка одной строки. Иначе отзыв стёр бы след подтверждения, и на
+-- вопрос «кто подтвердил ошибочную связку» ответить было бы нечем.
+-- Действующее состояние — последнее событие по заказу.
+CREATE TABLE IF NOT EXISTS link_confirmations (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_num   INTEGER NOT NULL,
+    event       TEXT NOT NULL,        -- confirmed | revoked
+    person_code TEXT NOT NULL,
+    acted_at    TEXT NOT NULL,
+    note        TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_link_conf_order
+    ON link_confirmations (order_num, id);
+
 -- Регистрации камеры (опыт OQ-96): пассивное распознавание бирок над местом
 -- укладки. ИЗОЛИРОВАНО от facts/1С — это отдельный опыт, а не боевой факт.
 CREATE TABLE IF NOT EXISTS camera_regs (
@@ -289,6 +413,175 @@ class Storage:
                 self._conn.execute(f"ALTER TABLE details ADD COLUMN {col} {ddl}")
         if "route_flags" not in cols:
             self._conn.execute("ALTER TABLE order_links ADD COLUMN route_flags TEXT")
+
+    # --- Исполнители, права и вход по бейджу (SR-96 — SR-100) ---------------
+
+    def upsert_person(self, p: dict) -> None:
+        self._conn.execute("""
+            INSERT INTO persons (person_code, full_name, role, badge_id,
+                                 operator_id, active)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(person_code) DO UPDATE SET
+                full_name=excluded.full_name, role=excluded.role,
+                badge_id=excluded.badge_id, operator_id=excluded.operator_id,
+                active=excluded.active
+        """, (p["person_code"], p["full_name"], p["role"],
+              p.get("badge_id", ""), p.get("operator_id", ""),
+              int(p.get("active", 1))))
+        self._conn.commit()
+
+    def get_person(self, person_code: str):
+        return self._conn.execute(
+            "SELECT * FROM persons WHERE person_code=?",
+            (person_code,)).fetchone()
+
+    def get_person_by_badge(self, badge_id: str):
+        if not badge_id:
+            return None
+        return self._conn.execute(
+            "SELECT * FROM persons WHERE badge_id=?", (badge_id,)).fetchone()
+
+    def next_person_seq(self) -> int:
+        """
+        Следующий порядковый номер кода исполнителя.
+
+        Выдаётся счётчиком, который идёт ТОЛЬКО ВПЕРЁД, а не вычисляется
+        из существующих строк. Иначе удаление исполнителя вернуло бы его
+        код следующему человеку, и в старых отчётах один код означал бы
+        двоих. Номер расходуется при выдаче, даже если исполнитель потом
+        не сохранится, — пропуск в нумерации дешевле повтора.
+        """
+        cur = self._conn.execute(
+            "INSERT INTO person_code_seq (issued_at) VALUES (?)",
+            (datetime.now().isoformat(timespec="seconds"),))
+        self._conn.commit()
+        return int(cur.lastrowid)
+
+    def set_role_permission(self, role: str, action: str, allowed: int) -> None:
+        self._conn.execute("""
+            INSERT INTO role_permissions (role, action, allowed)
+            VALUES (?, ?, ?)
+            ON CONFLICT(role, action) DO UPDATE SET allowed=excluded.allowed
+        """, (role, action, int(allowed)))
+        self._conn.commit()
+
+    def get_role_permission(self, role: str, action: str) -> int:
+        row = self._conn.execute(
+            "SELECT allowed FROM role_permissions WHERE role=? AND action=?",
+            (role, action)).fetchone()
+        return int(row["allowed"]) if row else 0
+
+    def open_access_session(self, token: str, person_code: str,
+                            area_id: str, opened_at: str) -> None:
+        self._conn.execute(
+            "INSERT INTO access_sessions (token, person_code, area_id, "
+            "opened_at) VALUES (?, ?, ?, ?)",
+            (token, person_code, area_id, opened_at))
+        self._conn.commit()
+
+    def get_access_session(self, token: str):
+        return self._conn.execute(
+            "SELECT * FROM access_sessions WHERE token=? AND closed_at IS NULL",
+            (token,)).fetchone()
+
+    def close_access_session(self, token: str) -> None:
+        self._conn.execute(
+            "UPDATE access_sessions SET closed_at=? WHERE token=?",
+            (datetime.now().isoformat(timespec="seconds"), token))
+        self._conn.commit()
+
+    def log_privileged_action(self, person_code: str, role: str, action: str,
+                              acted_at: str, note: str = "") -> None:
+        self._conn.execute(
+            "INSERT INTO privileged_actions (person_code, role, action, "
+            "acted_at, note) VALUES (?, ?, ?, ?, ?)",
+            (person_code, role, action, acted_at, note))
+        self._conn.commit()
+
+    def get_privileged_actions(self, action: str = "") -> list:
+        if action:
+            return self._conn.execute(
+                "SELECT * FROM privileged_actions WHERE action=? "
+                "ORDER BY acted_at, id", (action,)).fetchall()
+        return self._conn.execute(
+            "SELECT * FROM privileged_actions ORDER BY acted_at, id").fetchall()
+
+    # --- Сменное задание 1С и подтверждение связки (SR-108 — SR-113) --------
+
+    def upsert_shift_task(self, task_id: str, task_date: str,
+                          warehouse: str = "") -> None:
+        self._conn.execute("""
+            INSERT INTO shift_tasks (task_id, task_date, warehouse, loaded_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(task_id) DO UPDATE SET
+                task_date=excluded.task_date, warehouse=excluded.warehouse,
+                loaded_at=excluded.loaded_at
+        """, (task_id, task_date, warehouse,
+              datetime.now().isoformat(timespec="seconds")))
+        self._conn.commit()
+
+    def add_shift_task_row(self, task_id: str, row_no: int, doc_num: str,
+                           doc_date: str, decor: str, sheets: int,
+                           order_num=None) -> None:
+        self._conn.execute("""
+            INSERT INTO shift_task_rows (task_id, row_no, order_num, doc_num,
+                                         doc_date, decor, sheets)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(task_id, row_no, decor) DO UPDATE SET
+                order_num=excluded.order_num, sheets=excluded.sheets
+        """, (task_id, int(row_no), order_num, doc_num, doc_date,
+              decor, int(sheets)))
+        self._conn.commit()
+
+    def get_shift_task_rows(self, task_id: str) -> list:
+        """Строки задания в порядке комплектования пачки листов (SR-109)."""
+        return self._conn.execute(
+            "SELECT * FROM shift_task_rows WHERE task_id=? "
+            "ORDER BY row_no, decor", (task_id,)).fetchall()
+
+    def active_shift_task(self):
+        """
+        Действующее сменное задание — последнее загруженное.
+
+        Отдельный метод, а не выбор на стороне вызывающего: область
+        поиска по SR-108 обязана определяться СЕРВЕРОМ. Если бы её
+        задавал экран, оператор мог бы прислать пустую область и найти
+        заказ где угодно — то есть требование выполнялось бы только
+        пока клиент вежлив.
+        """
+        return self._conn.execute(
+            "SELECT * FROM shift_tasks ORDER BY loaded_at DESC, task_id DESC "
+            "LIMIT 1").fetchone()
+
+    def shift_task_orders(self, task_id: str) -> list:
+        """Номера заказов БАЗИС в задании — область поиска (SR-108)."""
+        return [r["order_num"] for r in self._conn.execute(
+            "SELECT DISTINCT order_num FROM shift_task_rows "
+            "WHERE task_id=? AND order_num IS NOT NULL", (task_id,)).fetchall()]
+
+    def get_task_rows_for_order(self, task_id: str, order_num: int) -> list:
+        return self._conn.execute(
+            "SELECT * FROM shift_task_rows WHERE task_id=? AND order_num=? "
+            "ORDER BY decor", (task_id, order_num)).fetchall()
+
+    def log_link_confirmation(self, order_num: int, event: str,
+                              person_code: str, note: str = "") -> None:
+        self._conn.execute(
+            "INSERT INTO link_confirmations (order_num, event, person_code, "
+            "acted_at, note) VALUES (?, ?, ?, ?, ?)",
+            (order_num, event, person_code,
+             datetime.now().isoformat(timespec="seconds"), note))
+        self._conn.commit()
+
+    def last_link_confirmation(self, order_num: int):
+        return self._conn.execute(
+            "SELECT * FROM link_confirmations WHERE order_num=? "
+            "ORDER BY id DESC LIMIT 1", (order_num,)).fetchone()
+
+    def link_confirmation_history(self, order_num: int) -> list:
+        return self._conn.execute(
+            "SELECT * FROM link_confirmations WHERE order_num=? ORDER BY id",
+            (order_num,)).fetchall()
 
     def close(self):
         if self._conn:
