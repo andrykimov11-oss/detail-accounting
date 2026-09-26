@@ -177,7 +177,7 @@ class Anonymizer:
 
     def clean_path_component(self, component: str) -> str:
         """Заменить название клиента в имени папки/файла."""
-        # "6564-Spectorg-OOO" → "6564-Клиент_1234"
+        # "6564-Vydumtorg-OOO" → "6564-Клиент_1234"
         # Шаблон: <число>-<текст-с-дефисами>
         m = re.match(r"^(\d+)-(.+)$", component)
         if m:

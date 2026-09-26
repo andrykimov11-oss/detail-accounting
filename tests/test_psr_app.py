@@ -226,7 +226,7 @@ def raskroy(tmp_path):
     root, machine = tmp_path / "bazis", tmp_path / "station"
     for decor, files in (("Kronoshpan-1", ["Board-1.xPrg", "Board-2.xPrg"]),
                          ("Oreh-Karija-1", ["Board-1.xPrg"])):
-        d = root / "Gabbiani" / "7709-Hvorostov" / decor
+        d = root / "Gabbiani" / "7709-Vydumkin" / decor
         d.mkdir(parents=True)
         for f in files:
             (d / f).write_text("PROGRAM", encoding="utf-8")
@@ -332,7 +332,7 @@ def test_sr100_ответ_подготовки_не_несёт_путей(raskro
     """В путях каталога БАЗИС — фамилия клиента. Наружу идёт только счёт."""
     raskroy.post("/psr/api/confirm", json={"order": 7709})
     r = raskroy.post("/psr/api/prepare", json={"order": 7709}).get_json()
-    assert "Hvorostov" not in str(r) and "/" not in str(r.get("message", ""))
+    assert "Vydumkin" not in str(r) and "/" not in str(r.get("message", ""))
     assert set(r) <= {"ok", "programs", "message"}
 
 

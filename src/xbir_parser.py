@@ -10,7 +10,7 @@
 
 Применение:
     python src/xbir_parser.py <файл.xbir> [<файл2.xbir> ...] --out <папка>
-    python src/xbir_parser.py samples/6564-Spectorg-OOO/Slejt-M-10mm.-(19150)-1/.xbir --out out
+    python src/xbir_parser.py samples/6564-Vydumtorg-OOO/Slejt-M-10mm.-(19150)-1/.xbir --out out
 """
 from __future__ import annotations
 

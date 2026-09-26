@@ -32,6 +32,8 @@
 from __future__ import annotations
 
 import os
+import re
+import warnings
 import tempfile
 from pathlib import Path
 
@@ -48,18 +50,62 @@ from src.raskroy_nav import (
 from src.storage import Storage
 
 
+# Выдуманные фамилии для имён папок заказов. Перечень ЯВНЫЙ и
+# проверяется тестом ниже.
+#
+# ЗАЧЕМ. До 26.09.2026 здесь стояли НАСТОЯЩИЕ фамилии клиентов, взятые
+# из каталога БАЗИС, — и вместе с номерами заказов ушли в репозиторий и
+# в его историю (CF-439). Дефект прожил незамеченным именно потому, что
+# фамилия в фикстуре выглядит как часть правдоподобных данных, а не как
+# персональные данные: проверка «фамилия не уходит наружу» стояла рядом
+# и была написана на ту же настоящую фамилию.
+#
+# Правило: имя папки заказа в тестах — только отсюда. Настоящая фамилия
+# в код не попадает даже как образец того, чего нельзя показывать.
+INVENTED_SURNAMES = ("Vydumkin", "Vydumkina", "Vymyslov", "Vydumtorg")
+
+
+def test_имена_папок_в_фикстурах_выдуманы(tmp_path):
+    """
+    Сторож для CF-439. Проверяется НЕ намерение автора, а текст файла:
+    каждое имя папки вида «NNNN-Имя» в этом файле обязано нести фамилию
+    из явного перечня.
+
+    СТАТУС — ПРЕДУПРЕЖДАЮЩИЙ (решение владельца D-223). Настоящая
+    фамилия в фикстуре печатает предупреждение и прогон не роняет:
+    боевой контур — локальная сеть, фамилия без инициалов и контактов
+    владельцем персональными данными не считается.
+
+    Послабление СРОЧНОЕ: владелец назвал конец срока — «до размещения
+    на рабочем сервере в локальной сети». В тот день `warnings.warn`
+    ниже возвращается на `assert`, и сторож снова блокирующий. Срок
+    заведён пунктом 0.12 `PLAN-001`, чтобы у него был исполнитель и
+    признак завершения, а не одно слово «пока».
+    Само наличие имён проверяется жёстко: если перестанут находиться
+    вовсе, сторож молчал бы, ничего не охраняя (урок CF-439 о пустых
+    проверках).
+    """
+    text = Path(__file__).read_text(encoding="utf-8")
+    names = set(re.findall(r'\b\d{4}-([A-Z][A-Za-z]+)', text))
+    assert names, "в файле не найдено ни одного имени папки заказа"
+    чужие = sorted(names - set(INVENTED_SURNAMES))
+    if чужие:
+        warnings.warn(f"имя папки заказа вне перечня выдуманных: {чужие} "
+                      f"(не блокирует по D-223)", stacklevel=2)
+
+
 def _catalog(root: Path) -> None:
     """Каталог БАЗИС: два заказа, один многодекорный, один однодекорный."""
     spec = {
-        "Gabbiani/7709-Hvorostov": {
+        "Gabbiani/7709-Vydumkin": {
             "Kronoshpan-2500h1830-1": ["Board-1.xPrg", "Board-2.xPrg"],
             "Oreh-Karija-16-mm-1": ["Board-1.xPrg"],
             "HDF-2800h2070-1": ["Board-1.xPrg"],
         },
-        "Gabbiani/1980-Petrjaeva": {
+        "Gabbiani/1980-Vydumkina": {
             "Belyj-R-16mm-1": ["Board-1.xPrg"],
         },
-        "Nanxing/2054-Durnovcev": {
+        "Nanxing/2054-Vymyslov": {
             "Dub-Votan-1": ["Board-1.xPrg"],
         },
     }
@@ -100,8 +146,8 @@ def nav():
 # SR-110. Папка ищется через связку, а не по номеру 1С
 # ----------------------------------------------------------------------
 def test_sr110_папка_найдена_по_номеру_базис(nav):
-    assert nav.order_folder(7709).name == "7709-Hvorostov"
-    assert nav.order_folder(1980).name == "1980-Petrjaeva"
+    assert nav.order_folder(7709).name == "7709-Vydumkin"
+    assert nav.order_folder(1980).name == "1980-Vydumkina"
 
 
 def test_sr110_номер_1с_папку_не_находит(nav):
@@ -115,7 +161,7 @@ def test_sr110_номер_1с_папку_не_находит(nav):
 
 def test_sr110_папка_ищется_по_всем_станкам(nav):
     """Заказ мог быть раскроен на другом центре — каталог общий."""
-    assert nav.order_folder(2054).name == "2054-Durnovcev"
+    assert nav.order_folder(2054).name == "2054-Vymyslov"
 
 
 def test_отказ_не_называет_фамилию_клиента(nav):
@@ -126,7 +172,7 @@ def test_отказ_не_называет_фамилию_клиента(nav):
     with pytest.raises(OrderFolderNotFound) as e:
         nav.order_folder(9999)
     text = str(e.value)
-    for surname in ("Hvorostov", "Petrjaeva", "Durnovcev"):
+    for surname in ("Vydumkin", "Vydumkina", "Vymyslov"):
         assert surname not in text
     assert "9999" in text
 
@@ -309,7 +355,7 @@ def test_sr111_без_подтверждения_программы_не_коп�
 # ----------------------------------------------------------------------
 def test_sr100_отчёт_не_содержит_имён_папок(nav):
     rep = nav.navigate(7709, "25.08/1").to_report()
-    assert "Hvorostov" not in str(rep)
+    assert "Vydumkin" not in str(rep)
     assert rep["order_num"] == 7709
     assert rep["decors"][0]["sheets"] >= 0
     assert "folder" not in str(rep) and "path" not in str(rep)
