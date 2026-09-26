@@ -71,6 +71,13 @@ def create_app(db_path: str | Path = "prod.db") -> Flask:
     # PIN админки: из окружения DA_ADMIN_PIN, иначе "0000". Сменить в бою.
     app.config["ADMIN_PIN"] = os.environ.get("DA_ADMIN_PIN", "0000")
 
+    # Рабочие места первого этапа ПСР: позаказная отметка и экран
+    # начальника цеха. Отдельный blueprint, а не ветка в этих маршрутах:
+    # подетальное и позаказное рабочие места — разные экраны для разных
+    # моментов жизни предприятия (D-208).
+    from psr_app import psr as psr_blueprint
+    app.register_blueprint(psr_blueprint)
+
     def _core() -> ProductionCore:
         """Свежий ProductionCore на текущий запрос (своё соединение sqlite)."""
         return ProductionCore(Storage(current_app.config["DB_PATH"]))

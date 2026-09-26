@@ -82,6 +82,7 @@ class Detail:
     plate_no: int = 0
     map_no: int = 0
     pos_no: str = ""
+    product_code: str = ""       # «Обозначение изделия» — измеритель сборки
     source_file: str = ""
 
 

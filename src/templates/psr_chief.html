@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Цех — что где в работе</title>
+<style>
+ body { font: 16px/1.5 system-ui, sans-serif; color:#1a1a1a; margin:0; padding:20px; }
+ h1 { font-size:24px; margin:0 0 2px; }
+ .sub { color:#666; margin-bottom:22px; }
+ .grid { display:grid; gap:14px; grid-template-columns:repeat(auto-fill,minmax(330px,1fr)); }
+ .area { border:1px solid #d8d8d8; border-radius:8px; padding:14px; }
+ .area h2 { font-size:18px; margin:0 0 2px; }
+ .measure { color:#666; font-size:14px; margin-bottom:10px; }
+ .measure.missing { color:#8a5a00; }
+ .ord { border-top:1px solid #eee; padding:8px 0; }
+ .ord b { font-size:16px; }
+ .meta { color:#555; font-size:14px; }
+ .none { color:#777; font-style:italic; font-size:15px; }
+ .foot { margin-top:26px; color:#666; font-size:14px; border-top:1px solid #eee;
+         padding-top:12px; }
+</style>
+</head>
+<body>
+<h1>Что где в работе</h1>
+<div class="sub">Позаказная картина по шести участкам. Обновляется по F5.</div>
+
+<div class="grid">
+{% for a in areas %}
+  <div class="area">
+    <h2>{{ a.name }}</h2>
+    {% if a.measure %}
+      <div class="measure">Измеритель: {{ a.measure }}</div>
+    {% else %}
+      <div class="measure missing">Измеритель не задан технологом</div>
+    {% endif %}
+    {% if not a.in_work %}
+      <div class="none">Ничего не взято в работу</div>
+    {% endif %}
+    {% for s in a.in_work %}
+      <div class="ord">
+        <b>Заказ {{ s.order_num }}</b>{% if s.client %} — {{ s.client }}{% endif %}
+        <div class="meta">
+          с {{ s.opened_at.replace('T', ' ') }} ·
+          {{ s.unique_details }} уник. деталей, {{ s.total_items }} шт.
+          {% if s.measure_value is not none %} · {{ s.measure_value }} {{ s.measure_name }}{% endif %}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+{% endfor %}
+</div>
+
+<div class="foot">
+  Нормативов и подсветки отклонений здесь нет: они появляются на шаге 2,
+  когда накопится скользящая медиана за 30 смен участка. Пока идёт
+  накопление — это и есть работа шага 1.
+</div>
+</body>
+</html>
