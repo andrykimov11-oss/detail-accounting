@@ -89,6 +89,11 @@ ACT_LAUNCH_OVERRIDE = "launch.override"  # SR-76
 ACT_REF_EDIT = "reference.edit"          # SR-83, SR-99
 ACT_NORM_EDIT = "norm.edit"              # SR-79, SR-80, SR-99
 ACT_RETRO_MARK = "mark.retrospective"    # SR-13, SR-99
+# BR-81 и SR-48 называют адресата отчёта об обмене с 1С ПОИМЕННО:
+# руководитель производства. Поэтому право отдельное, а не «смотреть
+# отчёты»: требование указало роль, и расширять её до начальника цеха
+# значило бы решать за владельца.
+ACT_ONEC_REPORT = "onec.report"           # SR-48, SR-49, BR-81
 
 # Действия, которые SR-99 требует сопровождать записью автора и момента.
 AUDITED_ACTIONS = frozenset({
@@ -298,10 +303,10 @@ DEFAULT_PERMISSIONS: dict[str, tuple[str, ...]] = {
     STOREKEEPER: (ACT_RECEIPT,),
     CHIEF: (ACT_CLAIM, ACT_REWORK_SEND, ACT_REWORK_REDIRECT,
             ACT_LAUNCH_OVERRIDE),
-    PRODUCTION: (ACT_NORM_EDIT,),
+    PRODUCTION: (ACT_NORM_EDIT, ACT_ONEC_REPORT),
     TECHNOLOGIST: (ACT_REF_EDIT,),
     MATERIALS: (),
-    ADMIN: (ACT_REF_EDIT, ACT_NORM_EDIT, ACT_RETRO_MARK),
+    ADMIN: (ACT_REF_EDIT, ACT_NORM_EDIT, ACT_RETRO_MARK, ACT_ONEC_REPORT),
 }
 
 

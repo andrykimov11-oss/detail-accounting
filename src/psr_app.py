@@ -44,6 +44,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from flask import Blueprint, jsonify, render_template, request
@@ -51,6 +52,7 @@ from flask import Blueprint, jsonify, render_template, request
 sys.path.insert(0, str(Path(__file__).parent))
 
 from access import (  # noqa: E402
+    ACT_ONEC_REPORT,
     ACT_ORDER_CLOSE,
     ACT_ORDER_OPEN,
     Access,
@@ -59,6 +61,7 @@ from access import (  # noqa: E402
     PersonInactive,
 )
 from area_measures import AreaMeasures, MeasureNotSet  # noqa: E402
+from one_c_sync import KIND_NAMES, OneCSync  # noqa: E402
 from storage import Storage  # noqa: E402
 from order_registration import (  # noqa: E402
     OrderAlreadyClosed,
@@ -408,3 +411,60 @@ def api_order(order_num: int):
     ]
     return jsonify(order=_order_card(st, measures, order_num, ""),
                    history=history)
+
+
+@psr.route("/api/onec/queue")
+def api_onec_queue():
+    """
+    SR-48, BR-81: состояние очереди обмена с 1С.
+
+    Отчёт нужен не «для полноты». Пока цех отмечает и здесь, и в 1С,
+    проект добавил работы и не убрал ни одной; выключить старую
+    регистрацию разрешено при расхождении меньше 2 % (SR-49, D-163).
+    Значит кто-то обязан видеть, доходят ли сообщения вообще, — и
+    требование называет этого человека поимённо: руководитель
+    производства, а не «ответственный».
+    """
+    st = _storage()
+    try:
+        _access(st).require(_current(st), ACT_ONEC_REPORT)
+    except AccessDenied as exc:
+        return jsonify(ok=False, error=str(exc)), 200
+    отчёт = OneCSync(st).stuck_queue()
+    return jsonify(ok=True, stuck=отчёт.stuck, alarm=отчёт.is_alarm,
+                   oldest_at=отчёт.oldest_at,
+                   oldest_age_hours=round(отчёт.oldest_age_hours, 1),
+                   by_kind={KIND_NAMES.get(k, k): v
+                            for k, v in отчёт.by_kind.items()},
+                   addressee=отчёт.addressee,
+                   text=отчёт.as_text())
+
+
+@psr.route("/api/onec/reconcile")
+def api_onec_reconcile():
+    """
+    SR-49: расхождение за месяц и вывод о старой регистрации.
+
+    Число 1С приходит ПАРАМЕТРОМ `theirs`, а не добывается: формат
+    выгрузки операционной истории выясняется вопросами OQ-114 и OQ-115.
+    Пока ответа нет, руководитель производства вводит число из 1С
+    руками — и это честнее, чем разбирать формат, которого ещё нет.
+    """
+    st = _storage()
+    try:
+        _access(st).require(_current(st), ACT_ONEC_REPORT)
+    except AccessDenied as exc:
+        return jsonify(ok=False, error=str(exc)), 200
+    месяц = request.args.get("month") or datetime.now().strftime("%Y-%m")
+    if request.args.get("theirs") is None:
+        return jsonify(ok=False, error=(
+            "не задано число закрытых операций по данным 1С за месяц "
+            "(параметр theirs). Без него расхождение не считается: "
+            "сравнивать не с чем"), ours=OneCSync(st).closed_operations(месяц),
+            month=месяц), 200
+    r = OneCSync(st).reconcile(месяц, theirs=int(request.args["theirs"]))
+    return jsonify(ok=True, month=r.month, ours=r.ours, theirs=r.theirs,
+                   diff=r.diff,
+                   rate=None if r.rate == float("inf") else round(r.rate, 4),
+                   threshold=r.threshold, may_switch_off=r.may_switch_off,
+                   text=r.as_text())

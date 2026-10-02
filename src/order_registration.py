@@ -272,9 +272,17 @@ class OrderRegistration:
         системы, 1С его не принимает и принимать не должна. Это и есть
         перехват точки ввода: ввод один, потребителей два.
         """
+        from one_c_sync import MSG_OPERATION_STATUS   # noqa: PLC0415
+
         link = self.st.get_order_link(s.order_num)
         op_key = f"{s.order_num}|{s.area_id}|order-close"
         payload = {
+            # SR-45: вид сообщения проставляется ЯВНО. До этого вид
+            # угадывался по хвосту ключа очереди — то есть 1С отличала
+            # статус операции от завершения заказа по строке «order-close»
+            # в чужом для неё поле. Один вид сообщения из трёх, опознаваемый
+            # разбором ключа, — это не три вида, а один и две догадки.
+            "kind": MSG_OPERATION_STATUS,
             "order_full_num": link["order_full_num"] if link else "",
             "order_date": link["order_date"] if link else "",
             "order_num": s.order_num,

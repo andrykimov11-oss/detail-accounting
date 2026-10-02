@@ -83,7 +83,8 @@ CREATE TABLE IF NOT EXISTS order_links (
     order_full_num TEXT,                     -- 'ПС00-007936' — документ 1С
     order_date     TEXT,                     -- дата заказа 1С (ISO) — часть ключа для записи статуса
     deadline       TEXT,                     -- плановая дата выдачи (ISO) — для очереди/просрочки
-    route_flags    TEXT,                     -- «раздваивающие» операции маршрута: сдвойка/фрезеровка/радиусы
+    route_flags    TEXT,                     -- «раздваивающие» операции маршрут
+    doc_guid       TEXT,                     -- GUID документа 1С: то, что в QR на бланке (D-229)а: сдвойка/фрезеровка/радиусы
     client_name    TEXT,                     -- клиент по данным 1С
     xbir_client    TEXT,                     -- клиент, извлечённый из .xbir
     status         TEXT NOT NULL,            -- unique/client/manual/not_found
@@ -413,6 +414,14 @@ class Storage:
                 self._conn.execute(f"ALTER TABLE details ADD COLUMN {col} {ddl}")
         if "route_flags" not in cols:
             self._conn.execute("ALTER TABLE order_links ADD COLUMN route_flags TEXT")
+        # GUID документа 1С (D-229). Аддитивно: в QR на бланке заказа
+        # оказался GUID, а не пара «номер + дата», и разрешать скан
+        # не во что, пока GUID не лежит рядом со связкой заказа.
+        if "doc_guid" not in cols:
+            self._conn.execute("ALTER TABLE order_links ADD COLUMN doc_guid TEXT")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_order_links_guid "
+                "ON order_links(doc_guid)")
 
     # --- Исполнители, права и вход по бейджу (SR-96 — SR-100) ---------------
 
@@ -921,18 +930,25 @@ class Storage:
                           xbir_client: str = "", reason: str = "",
                           candidates: list[str] | None = None,
                           confirmed_by: str = "", order_date: str = "",
-                          deadline: str = "", route_flags: str = "") -> None:
+                          deadline: str = "", route_flags: str = "",
+                          doc_guid: str = "") -> None:
         """Записать результат разрешения связки заказа."""
         self._conn.execute("""
             INSERT INTO order_links (order_num, order_full_num, order_date,
-                deadline, route_flags, client_name, xbir_client, status, reason,
-                candidates, confirmed_by, resolved_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                deadline, route_flags, doc_guid, client_name, xbir_client,
+                status, reason, candidates, confirmed_by, resolved_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(order_num) DO UPDATE SET
                 order_full_num=excluded.order_full_num,
                 order_date=excluded.order_date,
                 deadline=excluded.deadline,
                 route_flags=excluded.route_flags,
+                -- GUID не затирается пустым: выгрузка 1С может прийти без
+                -- колонки GUID (пока программист её не добавил), и тогда
+                -- повторное разрешение связки стёрло бы уже известный GUID,
+                -- то есть сломало бы скан на уже работавшем заказе.
+                doc_guid=CASE WHEN COALESCE(excluded.doc_guid,'')<>''
+                              THEN excluded.doc_guid ELSE order_links.doc_guid END,
                 client_name=excluded.client_name,
                 xbir_client=excluded.xbir_client,
                 status=excluded.status,
@@ -941,6 +957,7 @@ class Storage:
                 confirmed_by=excluded.confirmed_by,
                 resolved_at=excluded.resolved_at
         """, (order_num, order_full_num, order_date, deadline, route_flags,
+              (doc_guid or "").strip().lower(),
               client_name, xbir_client, status, reason,
               ";".join(candidates or []), confirmed_by,
               datetime.now().isoformat()))
@@ -990,6 +1007,25 @@ class Storage:
                 WHERE order_full_num = ?
                   AND substr(COALESCE(order_date,''), 1, 10) = ?
                 LIMIT 1""", (doc_num, doc_date)).fetchone()
+        return row["order_num"] if row else None
+
+    def find_order_by_guid(self, doc_guid: str):
+        """
+        Номер заказа БАЗИС по GUID документа 1С (D-229).
+
+        GUID однозначен сам по себе: ни префикс документа, ни год, ни
+        формат даты на него не влияют. Сравнение идёт по приведённому
+        виду — строчные, через дефисы: один и тот же документ, записанный
+        в QR заглавными, а в выгрузке строчными, иначе не сошёлся бы, и
+        отказ выглядел бы как «чужой бланк», а не как расхождение регистра.
+        """
+        if not doc_guid:
+            return None
+        row = self._conn.execute(
+            """SELECT order_num FROM order_links
+                WHERE lower(replace(replace(replace(
+                        COALESCE(doc_guid,''), '{',''), '}',''), ' ','')) = ?
+                LIMIT 1""", (doc_guid.strip().lower(),)).fetchone()
         return row["order_num"] if row else None
 
     def is_order_linked(self, order_num: int) -> bool:
