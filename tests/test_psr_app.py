@@ -90,7 +90,7 @@ def test_чужой_бланк_объясняет_причину_а_не_гов�
     r = client.post("/psr/api/scan", json={"code": "8952",
                                            "area": "kromlenie"}).get_json()
     assert r["ok"] is False
-    assert "ожидалась пара" in r["error"]
+    assert "GUID" in r["error"] and "номер документа и дата" in r["error"]
 
 
 def test_закрытие_возвращает_длительность_и_измеритель(client):
@@ -341,3 +341,60 @@ def test_подтверждение_без_входа_отклонено(raskroy
     r = anon.post("/psr/api/confirm", json={"order": 7709}).get_json()
     assert r["ok"] is False and "не разрешено" in r["error"]
     assert raskroy.storage.link_confirmation_history(7709) == []
+
+
+# ----------------------------------------------------------------------
+# Отчёты об обмене с 1С (SR-48, SR-49, BR-81)
+# ----------------------------------------------------------------------
+def _вход(client, badge, role, имя):
+    """Завести человека нужной роли и войти его бейджем."""
+    from src.access import Access
+    ac = Access(client.storage)
+    ac.add_person(имя, role, badge_id=badge)
+    r = client.post("/psr/api/login", json={"badge": badge}).get_json()
+    assert r["ok"], r
+    client.environ_base["HTTP_X_PSR_TOKEN"] = r["token"]
+
+
+def test_отчёт_об_очереди_оператору_не_показывается(client):
+    """
+    BR-81 называет адресата поимённо: руководитель производства.
+    Оператор видит свой участок, а не состояние обмена с учётной системой.
+    """
+    r = client.get("/psr/api/onec/queue").get_json()
+    assert r["ok"] is False and "не разрешено" in r["error"]
+
+
+def test_отчёт_об_очереди_показывается_руководителю_производства(client):
+    from src.access import PRODUCTION
+    _вход(client, "B-0009", PRODUCTION, "Тестовый Руководитель Производства")
+    r = client.get("/psr/api/onec/queue").get_json()
+    assert r["ok"] and r["stuck"] == 0
+    assert r["addressee"] == "Руководитель производства"
+    assert "пуста" in r["text"]
+
+
+def test_сверка_без_числа_1с_не_выдумывает_его(client):
+    """
+    Формат выгрузки 1С выясняется вопросами OQ-114 и OQ-115. Пока ответа
+    нет, отчёт обязан ОТКАЗАТЬ и сказать, чего не хватает, а не принять
+    ноль за число 1С: ноль дал бы стопроцентное расхождение либо, хуже,
+    молчаливое «сходится».
+    """
+    from src.access import PRODUCTION
+    _вход(client, "B-0010", PRODUCTION, "Тестовый Руководитель Производства")
+    r = client.get("/psr/api/onec/reconcile").get_json()
+    assert r["ok"] is False
+    assert "сравнивать не с чем" in r["error"]
+    assert "ours" in r          # своё число при этом названо
+
+
+def test_сверка_считает_и_даёт_вывод_о_старой_регистрации(client):
+    from src.access import PRODUCTION
+    from datetime import datetime
+    _вход(client, "B-0011", PRODUCTION, "Тестовый Руководитель Производства")
+    месяц = datetime.now().strftime("%Y-%m")
+    r = client.get(f"/psr/api/onec/reconcile?month={месяц}&theirs=100").get_json()
+    assert r["ok"] and r["theirs"] == 100
+    assert r["threshold"] == 0.02
+    assert r["may_switch_off"] is False          # у нас ноль операций против 100
