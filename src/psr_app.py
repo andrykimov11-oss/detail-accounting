@@ -379,12 +379,20 @@ def chief_screen():
         sessions = reg.open_sessions(area_id)
         try:
             measure = measures.get_measure(area_id).measure_name
+            # D-236: на двух участках измеритель сегодня занижает
+            # выработку. Экран обязан сказать это человеку: число,
+            # про которое известно, что оно неполно, без пометки будет
+            # сравнено с планом как точное.
+            занижен = measures.is_lower_bound(area_id)
+            почему = measures.lower_bound_reason(area_id)
         except MeasureNotSet:
-            measure = None
+            measure, занижен, почему = None, False, ""
         areas.append({
             "area_id": area_id,
             "name": name,
             "measure": measure,
+            "measure_lower_bound": занижен,
+            "measure_note": почему,
             "in_work": [
                 {**s.__dict__,
                  **_order_card(st, measures, s.order_num, area_id)}

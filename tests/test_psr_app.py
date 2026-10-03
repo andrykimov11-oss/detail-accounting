@@ -398,3 +398,16 @@ def test_сверка_считает_и_даёт_вывод_о_старой_ре
     assert r["ok"] and r["theirs"] == 100
     assert r["threshold"] == 0.02
     assert r["may_switch_off"] is False          # у нас ноль операций против 100
+
+
+def test_экран_начальника_объявляет_занижённую_выработку(client):
+    """
+    D-236: на фрезеровании и присадке измеритель считает по неполному
+    признаку. Экран обязан это сказать — иначе начальник цеха сравнит
+    число с планом как точное и примет решение по неполным данным.
+    """
+    from src.area_measures import AreaMeasures, MILLED_ITEMS
+    AreaMeasures(client.storage).set_measure("frezerovanie", MILLED_ITEMS)
+    html = client.get("/psr/chief").get_data(as_text=True)
+    assert "занижена" in html
+    assert "OQ-130" in html          # причина доступна, а не просто пометка

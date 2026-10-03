@@ -13,6 +13,8 @@
  .area h2 { font-size:18px; margin:0 0 2px; }
  .measure { color:#666; font-size:14px; margin-bottom:10px; }
  .measure.missing { color:#8a5a00; }
+ .bound { color:#8a5a00; }
+ .note { color:#8a5a00; font-size:13px; margin:-6px 0 10px; }
  .ord { border-top:1px solid #eee; padding:8px 0; }
  .ord b { font-size:16px; }
  .meta { color:#555; font-size:14px; }
@@ -30,7 +32,8 @@
   <div class="area">
     <h2>{{ a.name }}</h2>
     {% if a.measure %}
-      <div class="measure">Измеритель: {{ a.measure }}</div>
+      <div class="measure">Измеритель: {{ a.measure }}{% if a.measure_lower_bound %} <span class="bound">— значения не менее</span>{% endif %}</div>
+      {% if a.measure_lower_bound %}<div class="note" title="{{ a.measure_note }}">Выработка участка считается по неполному признаку и занижена</div>{% endif %}
     {% else %}
       <div class="measure missing">Измеритель не задан технологом</div>
     {% endif %}

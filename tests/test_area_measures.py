@@ -263,3 +263,65 @@ def test_незагруженная_спецификация_названа_пр
     with pytest.raises(MeasureNotComputable) as e:
         m.value_for_order("kromlenie", 9999)
     assert "не загружена" in str(e.value)
+
+
+# ----------------------------------------------------------------------
+# Измерители, занижающие выработку (D-236)
+# ----------------------------------------------------------------------
+def test_занижающих_ровно_два_и_они_названы():
+    """
+    Перечень ЯВНЫЙ, как у отменённых измерителей. Заниженная величина
+    выглядит обычным числом — отличить её можно только по списку.
+    """
+    from src.area_measures import ЗАНИЖАЮЩИЕ, DRILLED_ITEMS, MILLED_ITEMS
+    assert set(ЗАНИЖАЮЩИЕ) == {MILLED_ITEMS, DRILLED_ITEMS}
+    for почему in ЗАНИЖАЮЩИЕ.values():
+        assert "OQ-130" in почему and "D-236" in почему
+
+
+def test_норматив_по_занижающему_измерителю_не_считается():
+    """
+    Главный опыт решения D-236. Удельный норматив делит время на
+    выработку: заниженная выработка завысит время на единицу, и
+    подсветка отклонений шага 2 сработает не там. Норматив, посчитанный
+    так, выглядит обычным числом — ошибку в нём обнаружить нечем,
+    поэтому отказ ставится ДО расчёта.
+    """
+    from src.area_measures import (DRILLED_ITEMS, MILLED_ITEMS, SHEETS,
+                                   ИзмерительЗанижает, assert_usable_for_norms)
+    for м in (MILLED_ITEMS, DRILLED_ITEMS):
+        with pytest.raises(ИзмерительЗанижает) as e:
+            assert_usable_for_norms(м)
+        assert "норматива не годится" in str(e.value)
+    assert_usable_for_norms(SHEETS)        # лист не занижает — проходит
+
+
+def test_счёт_по_занижающему_измерителю_не_запрещён(st):
+    """
+    Отказываться считать вовсе было бы неверно: значение по полю — не
+    мусор, а нижняя граница. Деталь с пазами фрезерование проходит
+    наверняка. Отказ погасил бы экран оператора на двух участках из
+    шести без нужды.
+    """
+    from src.area_measures import AreaMeasures, MILLED_ITEMS
+    _detail(st, "D1", order=8952, qty=3, grooves=2)   # с пазами — считается
+    _detail(st, "D2", order=8952, qty=5, grooves=0)   # без пазов — нет
+    m = AreaMeasures(st)
+    m.set_measure("frezerovanie", MILLED_ITEMS)
+    assert m.value_for_order("frezerovanie", 8952) == 3.0
+
+
+def test_экран_узнаёт_что_величина_нижняя_граница(st):
+    """
+    Число, про которое известно, что оно занижено, обязано показываться
+    как «не менее N». Иначе человек сравнит его с планом и примет
+    решение по неполным данным, не узнав, что данные неполны.
+    """
+    from src.area_measures import AreaMeasures, MILLED_ITEMS, SHEETS
+    m = AreaMeasures(st)
+    m.set_measure("frezerovanie", MILLED_ITEMS)
+    m.set_measure("raskroy", SHEETS)
+    assert m.is_lower_bound("frezerovanie") is True
+    assert m.is_lower_bound("raskroy") is False
+    assert "OQ-130" in m.lower_bound_reason("frezerovanie")
+    assert m.lower_bound_reason("raskroy") == ""
